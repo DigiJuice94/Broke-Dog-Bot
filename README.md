@@ -1,4 +1,4 @@
-# Broke Dog Bot Hybrid v1.0
+# Broke Dog Bot v1.4.0
 
 This is a new bot codebase built to combine the strongest behavior of two prior bots:
 
@@ -105,3 +105,21 @@ The standard NORMAL buy threshold is now **75/100** by default (`BUY_SCORE=75`).
 ## v1.3.0 — Fresh Discovery Rotation
 
 Dog Bot no longer lets a full 24-coin watch pool starve new discoveries. The active pool now defaults to 36, discovery targets up to 18 fresh candidates per cycle, Mobula rotates through a 50-token ranked result set, and stale sub-50 candidates older than 90 seconds can be rotated out to make room. Logs now show `fresh-cycle` and `unique-today` so you can see how many different coins the bot is actually trying. Promising/READY candidates are never evicted by the freshness rotation, and normal safety gates remain unchanged.
+
+
+## v1.4.0 — Faster Safety + More Learning Data
+
+Paper mode now uses a deliberately simpler decision path so Dog Brain can collect enough real examples to learn from:
+
+1. Discover + score the candidate.
+2. Start one cached Helius fast-safety check in parallel.
+3. In paper mode, hard-block only explicit dangerous mint/freeze authority, extreme holder concentration, or an explicit high bundle/launch signal.
+4. Buy or reject and keep tracking the outcome at 1m / 5m / 15m / 30m / 1h.
+
+The fast safety check defaults to a 3.5-second timeout and 90-second cache. Strong candidates are prechecked early so they should reach the buy threshold with safety already finished. Railway logs now show `🛡️ SAFETY VERIFIED in ...ms`.
+
+Extra Birdeye, bundle, route, smart-money and deep launch/funder work is still useful data, but it is no longer allowed to become another paper-mode veto layer. When a finalist appears in paper mode, those enrichments can finish in the background while the single fast-safety result controls the safety decision.
+
+Paper-mode route availability is recorded but does not block a simulated trade. Live mode remains stricter: executable Jupiter routes and the strict on-chain safety gate are still required.
+
+Paper defaults are also tuned to create more learning samples: `PAPER_MIN_OBSERVATION_MS=10000` and `PAPER_MIN_DATA_CONFIDENCE=60`. Candidates skipped because the wallet/position cap, daily loss brake, insufficient paper cash, or a failed buy are now explicitly recorded as rejected decisions so Dog Brain can follow them counterfactually instead of losing the sample.

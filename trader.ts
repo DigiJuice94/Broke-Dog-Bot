@@ -124,9 +124,9 @@ export class Trader {
     this.resetDailyIfNeeded(); await this.reconcileWallet();
     const open=this.positions.size, lane=c.entryLane??(c.score>=config.eliteScore?"ELITE":"NORMAL");
     const dailyPnl=config.liveTrading?this.realizedToday:this.paperDayRealizedUsd;
-    if(dailyPnl<=-config.maxDailyLossUsd){c.state="FAILED";c.decisionReason=`NO BUY: daily loss limit reached $${dailyPnl.toFixed(2)}`;log.warn(`[🛑 DAILY LOSS] ${c.token.name} skipped | ${c.decisionReason}`);return;}
-    if(open>=3){c.state="FAILED";c.decisionReason="NO BUY: 3 position hard cap reached";log.warn(`[NO BUY] ${c.token.name} | ${c.decisionReason}`);return;}
-    if(open>=config.maxOpenPositions && c.score<config.thirdPositionScore){c.state="FAILED";c.decisionReason=`NO BUY: 2 slots full; third slot requires score ${config.thirdPositionScore}+`;log.warn(`[NO BUY] ${c.token.name} | Score:${Math.round(c.score)} | ${c.decisionReason}`);return;}
+    if(dailyPnl<=-config.maxDailyLossUsd){c.state="FAILED";c.decisionReason=`NO BUY: daily loss limit reached $${dailyPnl.toFixed(2)}`;dogBrain.markDecision(c,"REJECTED");log.warn(`[🛑 DAILY LOSS] ${c.token.name} skipped | ${c.decisionReason}`);return;}
+    if(open>=3){c.state="FAILED";c.decisionReason="NO BUY: 3 position hard cap reached";dogBrain.markDecision(c,"REJECTED");log.warn(`[NO BUY] ${c.token.name} | ${c.decisionReason}`);return;}
+    if(open>=config.maxOpenPositions && c.score<config.thirdPositionScore){c.state="FAILED";c.decisionReason=`NO BUY: 2 slots full; third slot requires score ${config.thirdPositionScore}+`;dogBrain.markDecision(c,"REJECTED");log.warn(`[NO BUY] ${c.token.name} | Score:${Math.round(c.score)} | ${c.decisionReason}`);return;}
     this.busy.add(c.token.address);
     try {
       const snap = c.snapshots.at(-1)!;
@@ -141,6 +141,7 @@ export class Trader {
       });
       if (usd < config.minPositionUsd) {
         c.state = "FAILED"; c.decisionReason = `NO BUY: spendable balance below $${config.minPositionUsd}`;
+        dogBrain.markDecision(c,"REJECTED");
         log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:"❌ NO BUY",reason:c.decisionReason });
         return;
       }
@@ -188,6 +189,7 @@ export class Trader {
       });
     } catch (e) {
       c.state = "FAILED"; c.decisionReason = `BUY FAILED: ${e instanceof Error ? e.message : String(e)}`;
+      dogBrain.markDecision(c,"REJECTED");
       log.error(c.entryLane==="FLAME"?`[🔥 FLAME BUY FAILED] ${c.token.name} | Score:${Math.round(c.score)} | Reason:${c.decisionReason}`:`[BUY FAILED] ${c.token.name} | ${c.decisionReason}`);
     } finally { this.busy.delete(c.token.address); }
   }

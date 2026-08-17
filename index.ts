@@ -11,9 +11,10 @@ const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 async function main(){
   const wallet=new WalletService(),birdeye=new Birdeye(),jupiter=new Jupiter(wallet),trader=new Trader(wallet,jupiter);
   const scanner=new Scanner(birdeye,jupiter,c=>trader.buy(c));
-  log.info("🐶 BROKE DOG BOT v1.3.0 — FRESH DISCOVERY + DOG BRAIN + 75+ STANDARD BUY");
+  log.info("🐶 BROKE DOG BOT v1.4.0 — FAST PAPER SAFETY + MORE DOG BRAIN DATA");
   log.info(`Mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER TRADING"}`); log.info(`Wallet: ${wallet.address??"NOT CONFIGURED"}`);
-  log.info(`Entries: NORMAL ≥${config.buyScore} | ELITE ≥${config.eliteScore} | 🔥 FLAME ≥${config.flameMinScore} + early-runner pressure | observation ${config.minObservationMs/1000}-${config.maxObservationMs/1000}s`);
+  log.info(`Entries: NORMAL ≥${config.buyScore} | ELITE ≥${config.eliteScore} | 🔥 FLAME ≥${config.flameMinScore} + early-runner pressure | observation ${(!config.liveTrading&&config.paperFastSafety?config.paperMinObservationMs:config.minObservationMs)/1000}-${config.maxObservationMs/1000}s`);
+  if(!config.liveTrading&&config.paperFastSafety)log.info(`🛡️ PAPER FAST SAFETY: ONE gate | timeout ${config.safetyTimeoutMs}ms | cache ${Math.round(config.safetyCacheMs/1000)}s | hard veto only on explicit danger | route/deep enrichment do not block paper entries`);
   log.info(`Discovery rotation: active cap ${config.maxActiveCandidates} | fresh target ${config.freshCandidatesPerCycle}/cycle | rotate stale score <${config.staleEvictScore} after ${Math.round(config.staleEvictAgeMs/1000)}s | Mobula ranked pool ${config.mobulaTrendingLimit}`);
   log.info(`Discovery: Social watchlist + Mobula/Axiom-style + Birdeye + DEX/FOMO | v8.3-style Helius launch/holder safety added`);
   log.info(`Social: ${config.xBearerToken?"OPTIONAL X CONFIGURED":"OFF"} | discovery/confirmation only — never a mandatory normal-buy trigger`);
@@ -27,7 +28,7 @@ async function main(){
   if(!config.xBearerToken)log.warn("X_BEARER_TOKEN missing — expected/OK. Social/meta discovery is skipped; market + on-chain scoring continue normally.");
   if(!config.mobulaApiKey)log.warn("MOBULA_API_KEY missing — popular Axiom-style runner discovery unavailable; bot will use fallbacks.");
   if(!config.birdeyeApiKey)log.warn("BIRDEYE_API_KEY missing — Birdeye discovery/deep enrichment unavailable.");
-  if(!config.heliusApiKey)log.warn("HELIUS_API_KEY missing — v8.3-style holder/launch/dev safety cannot verify NORMAL/ELITE buys. FLAME can still use its calculated-risk exception if no hard veto is known.");
+  if(!config.heliusApiKey)log.warn(config.liveTrading?"HELIUS_API_KEY missing — strict live NORMAL/ELITE safety cannot verify entries.":"HELIUS_API_KEY missing — fast safety cannot verify; PAPER learning mode can still simulate entries when no hard-danger evidence is available.");
   if(!config.jupiterApiKey)log.warn("JUPITER_API_KEY missing — route verification/trading unavailable.");
   if(config.liveTrading&&!wallet.address)throw new Error("LIVE_TRADING=true but wallet private key is missing");
   await trader.warmSolPrice();

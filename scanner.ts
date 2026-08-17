@@ -10,7 +10,7 @@ import { DexScreener } from "./dexscreener.ts";
 import { MobulaAxiomDiscovery } from "./mobula.ts";
 import { SocialIntel } from "./social.ts";
 import { SmartMoneyIntel } from "./smartMoney.ts";
-import { analyzeRisk, normalRiskGate, flameRiskGate } from "./risk.ts";
+import { analyzeRisk, fastSafetyCheck, paperRiskGate, normalRiskGate, flameRiskGate } from "./risk.ts";
 import { dogBrain } from "./dogBrain.ts";
 
 export class Scanner {
@@ -205,10 +205,13 @@ export class Scanner {
       const holderPromise=doHolder?this.birdeye.holderStats(c.token.address):Promise.resolve({});
       const doSmart=index<config.smartMoneyCandidates && c.score>=config.smartMoneyMinScore;
       const smartPromise=doSmart?this.smartMoney.inspect(c.token.address):Promise.resolve({checked:false,smartTraders:0,snipers:0,insiders:0,bundlers:0,devs:0,score:0});
-      const doRisk=!!config.heliusApiKey && ((index<config.riskDeepCandidates && c.score>=config.riskDeepMinScore) || c.score>=config.buyScore-4);
-      const riskPromise=doRisk?analyzeRisk(c.token.address,c.token.listedAt):Promise.resolve(undefined);
+      // v1.4: start ONE fast safety precheck early and in parallel with scoring/enrichment.
+      // This is cached in risk.ts, so strong candidates normally reach the buy threshold
+      // with safety already finished instead of entering WAITING SAFETY.
+      const doSafety=!!config.heliusApiKey && (index<config.safetyPrecheckCandidates || c.score>=config.promoteScore);
+      const safetyPromise=doSafety?fastSafetyCheck(c.token.address):Promise.resolve(undefined);
       const social=this.social.scoreToken(c.token.name,c.token.symbol);
-      const [market,bundle,route,holder,smartMoney,onChainRisk]=await Promise.all([marketPromise,bundlePromise,routePromise,holderPromise,smartPromise,riskPromise]);
+      const [market,bundle,route,holder,smartMoney,onChainRisk]=await Promise.all([marketPromise,bundlePromise,routePromise,holderPromise,smartPromise,safetyPromise]);
 
       const snap:Snapshot={at:Date.now(),...market,...holder, social, smartMoney,onChainRisk,
         bundleRisk:bundle.risk,bundleStatus:doBundle?(bundle.status==="ok"?"ok":bundle.status==="error"?"error":"unknown"):"skipped",
@@ -225,26 +228,41 @@ export class Scanner {
         log.info(`[FINALIST NOW] ${c.token.name} ($${c.token.symbol}) | fresh score ${Math.round(c.score)}/100 crossed buy threshold — verifying now`);
 
         const tasks:Promise<void>[]=[];
+        const background:Promise<void>[]=[];
+        const queue=(p:Promise<void>)=>{
+          if(!config.liveTrading&&config.paperFastSafety) background.push(p); else tasks.push(p);
+        };
         if(!finalRoute){
           finalRoute=true;
-          tasks.push(this.jupiter.canBuyAndSell(c.token.address).then(r=>{snap.buyRoute=r.buy;snap.sellRoute=r.sell;snap.routeQuality=r.quality;}));
+          queue(this.jupiter.canBuyAndSell(c.token.address).then(r=>{snap.buyRoute=r.buy;snap.sellRoute=r.sell;snap.routeQuality=r.quality;}));
         }
         if(!finalBirdeye && this.birdeye.isCuAvailable()){
           finalBirdeye=true;
-          tasks.push(this.birdeye.snapshot(c.token.address,c.token.seed??{}).then(m=>{Object.assign(snap,m);}));
+          queue(this.birdeye.snapshot(c.token.address,c.token.seed??{}).then(m=>{Object.assign(snap,m);}));
         }
         if(!finalHolder && this.birdeye.isCuAvailable()){
           finalHolder=true;
-          tasks.push(this.birdeye.holderStats(c.token.address).then(h=>{Object.assign(snap,h);}));
+          queue(this.birdeye.holderStats(c.token.address).then(h=>{Object.assign(snap,h);}));
         }
         if(!finalBundle){
           finalBundle=true;
-          tasks.push(bundleRisk(c.token.address).then(b=>{snap.bundleRisk=b.risk;snap.bundleStatus=b.status==="ok"?"ok":b.status==="error"?"error":"unknown";}));
+          queue(bundleRisk(c.token.address).then(b=>{snap.bundleRisk=b.risk;snap.bundleStatus=b.status==="ok"?"ok":b.status==="error"?"error":"unknown";}));
         }
+        // Safety is the only paper-mode finalist check we wait on. Everything else
+        // above keeps enriching the snapshot in the background for Dog Brain.
         if(!snap.onChainRisk && config.heliusApiKey){
-          tasks.push(analyzeRisk(c.token.address,c.token.listedAt).then(r=>{snap.onChainRisk=r;}));
+          tasks.push(fastSafetyCheck(c.token.address).then(r=>{snap.onChainRisk=r;}));
         }
+        if(background.length) void Promise.allSettled(background);
         if(tasks.length) await Promise.all(tasks);
+
+        // Deep launch/funder analysis is learning enrichment now, not a paper-mode
+        // decision gate. Let it finish in the background and feed later scans.
+        if(config.heliusApiKey && c.score>=config.riskDeepMinScore){
+          void analyzeRisk(c.token.address,c.token.listedAt).then(r=>{
+            if(r.devRisk==="high"||r.holderRisk==="high"||r.bundleRisk==="high"||r.confidence==="high") snap.onChainRisk=r;
+          }).catch(()=>{});
+        }
         scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; dogBrain.observe(c);
       }
 
@@ -253,10 +271,15 @@ export class Scanner {
       const buySellRatio=buys1m/Math.max(1,sells1m);
       const sourceCount=c.sources.size;
       const volume1m=Number(snap.volume1mUsd??((snap.volume5mUsd??0)/5));
-      const routesOK=!!snap.buyRoute&&(!config.requireSellRoute||!!snap.sellRoute);
+      const routesVerified=!!snap.buyRoute&&(!config.requireSellRoute||!!snap.sellRoute);
+      // Paper mode is for generating learning data. A missing Jupiter route is recorded
+      // but does not veto a simulated entry. Live mode still requires executable routes.
+      const routesOK=config.liveTrading?routesVerified:true;
       const tokenAgeMin=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;
       const strictRisk=normalRiskGate(snap.onChainRisk);
-      const flameRisk=flameRiskGate(snap.onChainRisk);
+      const paperSafety=paperRiskGate(snap.onChainRisk);
+      const entryRisk=(!config.liveTrading&&config.paperFastSafety)?paperSafety:strictRisk;
+      const flameRisk=(!config.liveTrading&&config.paperFastSafety)?paperSafety:flameRiskGate(snap.onChainRisk);
       const flame=config.flameEnabled
         && c.score>=config.flameMinScore
         && (c.runnerScore??0)>=config.flameMinRunnerScore
@@ -267,11 +290,13 @@ export class Scanner {
         && tokenAgeMin<=config.flameMaxAgeMin
         && routesOK
         && flameRisk.ok;
-      const normalEntry=age>=config.minObservationMs
+      const requiredObservationMs=(!config.liveTrading&&config.paperFastSafety)?config.paperMinObservationMs:config.minObservationMs;
+      const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?config.paperMinDataConfidence:config.minDataConfidence;
+      const normalEntry=age>=requiredObservationMs
         && c.score>=config.buyScore
-        && c.dataConfidence>=config.minDataConfidence
+        && c.dataConfidence>=requiredConfidence
         && routesOK
-        && strictRisk.ok;
+        && entryRisk.ok;
 
       if(flame){
         c.state="READY"; c.entryLane="FLAME";
@@ -279,15 +304,16 @@ export class Scanner {
         log.info(`[🔥 FLAME] ${c.token.name} ($${c.token.symbol}) | AUTO BUY | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Quality:${Math.round(c.qualityScore??0)} Data:${Math.round(c.dataConfidence)}% B/S:${buySellRatio.toFixed(1)}x Vol:$${Math.round(volume1m)} Sources:${sourceCount}`);
       } else if(normalEntry){
         c.state="READY"; c.entryLane=c.score>=config.eliteScore?"ELITE":"NORMAL";
-        c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | ${strictRisk.why}`;
+        c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | ${entryRisk.why}`;
       } else if(age>=config.maxObservationMs){
         c.state="DROPPED";c.lastDroppedAt=Date.now();
-        const why=!routesOK?"buy/sell route unavailable":c.score<config.buyScore?`score ${Math.round(c.score)} < ${config.buyScore}`:c.dataConfidence<config.minDataConfidence?`data ${Math.round(c.dataConfidence)}% < ${config.minDataConfidence}%`:!strictRisk.ok?strictRisk.why:"observation ended";
+        const why=!routesOK?"buy/sell route unavailable":c.score<config.buyScore?`score ${Math.round(c.score)} < ${config.buyScore}`:c.dataConfidence<requiredConfidence?`data ${Math.round(c.dataConfidence)}% < ${requiredConfidence}%`:!entryRisk.ok?entryRisk.why:"observation ended";
         c.decisionReason=`NO BUY: ${why}`; dogBrain.markDecision(c,"REJECTED");
       } else {
         c.state=c.score>=config.promoteScore?"DEVELOPING":"WATCHING";
-        if(c.score>=config.buyScore&&!strictRisk.ok)c.decisionReason=`WAITING SAFETY: ${strictRisk.why}`;
+        if(c.score>=config.buyScore&&!entryRisk.ok)c.decisionReason=`WAITING SAFETY: ${entryRisk.why}`;
         else if(c.score>=config.buyScore&&!routesOK)c.decisionReason="WAITING EXECUTION: buy/sell route not verified";
+        else if(c.score>=config.buyScore&&age<requiredObservationMs)c.decisionReason=`READYING ENTRY: observation ${Math.round(age/1000)}s/${Math.round(requiredObservationMs/1000)}s`;
       }
 
       if(snap.dataErrors?.length&&snap.priceUsd==null&&!snap.dataErrors.some(x=>x.includes("cooldown")))log.warn(`[DATA] ${c.token.name} ($${c.token.symbol}) | ${snap.dataErrors.join(" | ")}`);
@@ -295,7 +321,7 @@ export class Scanner {
         status:c.state==="READY"?"✅ READY":c.state==="DROPPED"?"❌ NO BUY":`⏳ ${c.state}`,reason:c.decisionReason,sources:[...c.sources],rankText:this.rankText(c),
         details:{buys1m:snap.buys1m,sells1m:snap.sells1m,buys5m:snap.buys5m,sells5m:snap.sells5m,volume1mUsd:snap.volume1mUsd,volume5mUsd:snap.volume5mUsd,
           liquidityUsd:snap.liquidityUsd,holderCount:snap.holderCount,uniqueWallet1m:snap.uniqueWallet1m,
-          top10HolderPct:snap.onChainRisk?.top10Pct??snap.top10HolderPct,top1HolderPct:snap.onChainRisk?.top1Pct,top5HolderPct:snap.onChainRisk?.top5Pct,bundleClass:snap.onChainRisk?.bundleRisk,devRisk:snap.onChainRisk?.devRisk,holderRisk:snap.onChainRisk?.holderRisk,linkedSupply:snap.onChainRisk?.estimatedLinkedSupplyPct,socialScore:snap.social?.score,socialAccounts:snap.social?.keyAccounts?.join(","),meta:snap.social?.dominantMeta?.slice(0,3).join("/"),smart:snap.smartMoney?.checked?`S:${snap.smartMoney.smartTraders} Sn:${snap.smartMoney.snipers} In:${snap.smartMoney.insiders} B:${snap.smartMoney.bundlers}`:undefined,metaRunner:c.metaRunner,deep:`BE:${finalBirdeye?"Y":"-"} H:${finalHolder?"Y":"-"} B:${finalBundle?"Y":"-"} R:${finalRoute?"Y":"-"}`}});
+          top10HolderPct:snap.onChainRisk?.top10Pct??snap.top10HolderPct,top1HolderPct:snap.onChainRisk?.top1Pct,top5HolderPct:snap.onChainRisk?.top5Pct,bundleClass:snap.onChainRisk?.bundleRisk,devRisk:snap.onChainRisk?.devRisk,holderRisk:snap.onChainRisk?.holderRisk,linkedSupply:snap.onChainRisk?.estimatedLinkedSupplyPct,socialScore:snap.social?.score,socialAccounts:snap.social?.keyAccounts?.join(","),meta:snap.social?.dominantMeta?.slice(0,3).join("/"),smart:snap.smartMoney?.checked?`S:${snap.smartMoney.smartTraders} Sn:${snap.smartMoney.snipers} In:${snap.smartMoney.insiders} B:${snap.smartMoney.bundlers}`:undefined,metaRunner:c.metaRunner,deep:`S:${snap.onChainRisk?.checked?"Y":snap.onChainRisk?"~":"-"} BE:${finalBirdeye?"Y":"-"} H:${finalHolder?"Y":"-"} B:${finalBundle?"Y":"-"} R:${finalRoute?"Y":"-"}`}});
       if(c.state==="READY")await this.onReady(c);
     }catch(e){log.warn(`[SCAN ERROR] ${c.token.name} ${c.token.address}: ${e instanceof Error?e.message:String(e)}`);}finally{c.collecting=false;}
   }
