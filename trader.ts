@@ -348,6 +348,33 @@ export class Trader {
     }
   }
 
+
+  async reportSnapshot(mode:"PAPER"|"LIVE",sinceMs=3600000){
+    this.resetDailyIfNeeded(); const now=Date.now();
+    const pos=[...this.positions.values()].filter(p=>mode==="PAPER"?!!p.paper:!p.paper);
+    let priceMap=new Map<string,number>();
+    if(pos.length){try{const m=await this.dex.batch(pos.map(p=>p.mint));priceMap=new Map([...m].map(([k,v]:any)=>[k,Number(v?.priceUsd??0)]));}catch{}}
+    const openPositions=pos.map(p=>{const px=priceMap.get(p.mint)||p.entryPriceUsd; const pnl=(px/p.entryPriceUsd-1)*100;return {mint:p.mint,name:p.name,symbol:p.symbol,entryUsd:p.entryUsd,entryPriceUsd:p.entryPriceUsd,currentPriceUsd:px,pnlPct:pnl,lane:p.lane??"NORMAL",openedAt:p.openedAt};});
+    if(mode==="PAPER"){
+      let ledger:any[]=[];try{if(existsSync(config.paperLedgerFile)){const x=JSON.parse(readFileSync(config.paperLedgerFile,"utf8"));if(Array.isArray(x))ledger=x;}}catch{}
+      const recent=ledger.filter(x=>{const t=Date.parse(x.at??"");return Number.isFinite(t)&&now-t<=sinceMs;});
+      const buys=recent.filter(x=>x.type==="BUY"); const sells=recent.filter(x=>x.type==="SELL");
+      const closedTrades=sells.map(x=>({name:x.name??"?",symbol:x.symbol??"?",pnlPct:Number(x.pnlPct??0),pnlUsd:Number(x.pnlUsd??0),reason:x.reason??"paper exit",at:x.at}));
+      const wins=closedTrades.filter(x=>x.pnlPct>0).length,losses=closedTrades.filter(x=>x.pnlPct<=0).length;
+      const openValueUsd=openPositions.reduce((a,p)=>a+p.entryUsd*(p.currentPriceUsd/p.entryPriceUsd)*(1-this.paperCostsPct()/100),0);
+      const equityUsd=this.paperCashUsd+openValueUsd,totalPnlUsd=equityUsd-config.paperStartBalanceUsd,totalReturnPct=config.paperStartBalanceUsd?totalPnlUsd/config.paperStartBalanceUsd*100:0;
+      const unrealizedUsd=openValueUsd-pos.reduce((a,p)=>a+p.entryUsd,0);
+      return {mode,equityUsd,cashUsd:this.paperCashUsd,openValueUsd,totalPnlUsd,totalReturnPct,realizedUsd:this.paperRealizedUsd,unrealizedUsd,wins,losses,buys,sells,closedTrades,openPositions};
+    }
+    const recentClosed=this.closedTracks.filter(x=>now-x.closedAt<=sinceMs);
+    const buys=openPositions.filter(p=>now-p.openedAt<=sinceMs).map(p=>({type:"BUY",...p}));
+    const sells=recentClosed.map(x=>({type:"SELL",name:x.name,symbol:x.symbol,pnlPct:x.exitPnlPct,at:new Date(x.closedAt).toISOString()}));
+    const closedTrades=recentClosed.map(x=>({name:x.name,symbol:x.symbol,pnlPct:x.exitPnlPct,pnlUsd:x.entryPriceUsd>0?0:0,reason:"live exit",at:new Date(x.closedAt).toISOString()}));
+    const wins=closedTrades.filter(x=>x.pnlPct>0).length,losses=closedTrades.filter(x=>x.pnlPct<=0).length;
+    let solBalance=0,solUsd=0;try{[solBalance,solUsd]=await Promise.all([this.wallet.solBalance(),this.solPrice.get()]);}catch{}
+    return {mode,solBalance,walletSolUsd:solBalance*solUsd,realizedTodayUsd:this.realizedToday,wins,losses,buys,sells,closedTrades,openPositions};
+  }
+
   async monitorPositions() {
     const now = Date.now();
     await this.reconcileWallet();

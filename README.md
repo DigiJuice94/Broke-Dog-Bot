@@ -140,3 +140,27 @@ Paper defaults are also tuned to create more learning samples: `PAPER_MIN_OBSERV
 - HTTP 429 / Cloudflare 1015 triggers a 90s DEX cooldown instead of repeated hammering.
 - Error logs truncate HTML bodies so Railway logs stay readable.
 - Dog Brain and paper trading continue using cached/other-source data during DEX cooldowns.
+
+## v1.5.0 — Separate Hourly Paper + Live Email Reports
+
+This release adds Resend-powered email reporting without mixing paper results with live results.
+
+### Railway variables
+
+```env
+EMAIL_REPORT_ENABLED=true
+RESEND_API_KEY=re_xxxxxxxxx
+REPORT_EMAIL=you@example.com
+REPORT_FROM=Broke Dog Bot <onboarding@resend.dev>
+REPORT_INTERVAL_MINUTES=60
+REPORT_TIMEZONE=America/Denver
+HOURLY_PAPER_REPORT=true
+HOURLY_LIVE_REPORT=true
+DAILY_EMAIL_REPORT=true
+```
+
+The bot sends distinct `PAPER DOG REPORT` and `LIVE DOG REPORT` emails. Paper reports include paper equity/cash/open value, paper P&L, paper trades, wins/losses, open positions, and PAPER Dog Brain observations. Live reports use live wallet/position data and LIVE-labeled Dog Brain observations. Daily summaries are also kept separate.
+
+Dog Brain records created by v1.5.0 are tagged `PAPER` or `LIVE`. Older records remain readable and are assigned to the mode of the process that loads them for backward compatibility.
+
+Resend's default `onboarding@resend.dev` sender is intended for testing. For broader production delivery, configure a verified sender/domain in Resend and set `REPORT_FROM` accordingly.
