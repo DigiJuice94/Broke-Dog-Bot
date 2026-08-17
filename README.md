@@ -7,7 +7,7 @@ This is a new bot codebase built to combine the strongest behavior of two prior 
 
 ## Entry lanes
 
-### NORMAL — score 84–89
+### NORMAL — score 75–89
 Requires v8.3-style on-chain safety verification through Helius. Unknown launch/bundle risk is not accepted for normal entries.
 
 ### ELITE — score 90+
@@ -91,8 +91,12 @@ Important: Railway's normal filesystem may not survive redeploys. For long-term 
 
 
 ## 🧠 Dog Brain v1 (v1.2)
-Dog Brain is a controlled self-learning layer for PAPER mode. It records every evaluated candidate, freezes the decision-time feature vector, then follows bought and rejected coins at 1m, 5m, 15m, 30m and 1h. It learns separate NORMAL and FLAME feature weights from runner/dump outcomes.
+Dog Brain is a controlled self-learning layer that stays ON in both PAPER and LIVE modes. It records every evaluated candidate, freezes the decision-time feature vector, then follows bought and rejected coins at 1m, 5m, 15m, 30m and 1h. It learns separate NORMAL and FLAME feature weights from runner/dump outcomes.
 
-Guardrails: learning is disabled for live-mode scoring, requires a minimum sample count, feature weights and daily movement are capped, total learned score adjustment is capped, hard route/on-chain/rug gates remain outside the learner, and a paper-performance deterioration window resets learned weights automatically. State persists in `broke-dog-brain-v1.json` by default.
+Guardrails: learning stays enabled in live and paper modes, requires a minimum sample count, feature weights and daily movement are capped, total learned score adjustment is capped, hard route/on-chain/rug gates remain outside the learner, and a recent-performance deterioration window resets learned weights automatically. State persists in `broke-dog-brain-v1.json` by default.
 
 Logs use `🧠🐶`, including missed runners, avoided rugs/dumps, learned outcomes and the daily learning report.
+
+## v1.2.2 buy threshold
+
+The standard NORMAL buy threshold is now **75/100** by default (`BUY_SCORE=75`). Scores at or above 75 are buy-eligible only after the existing route, data-confidence, observation, and hard safety/rug checks pass. Dog Brain learned score adjustments continue to operate within their configured caps.
