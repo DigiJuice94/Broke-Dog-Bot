@@ -1,4 +1,4 @@
-# Broke Cat Bot Hybrid v1.0
+# Broke Dog Bot Hybrid v1.0
 
 This is a new bot codebase built to combine the strongest behavior of two prior bots:
 
@@ -54,7 +54,7 @@ The market-quality score also uses the v8.3 ideas of liquidity, 5m volume, volum
 
 ## Position recovery
 
-Positions are persisted to `broke-cat-hybrid-state.json` and the live wallet is reconciled every 30 seconds. If a token exists in the wallet but is missing from memory/state, the bot creates a recovered position and logs `♻️ RECOVERED POSITION`. A sell does not remove the position until the wallet balance is effectively zero. Failed sells retain the position.
+Positions are persisted to `broke-dog-hybrid-state.json` and the live wallet is reconciled every 30 seconds. If a token exists in the wallet but is missing from memory/state, the bot creates a recovered position and logs `♻️ RECOVERED POSITION`. A sell does not remove the position until the wallet balance is effectively zero. Failed sells retain the position.
 
 ## Important deployment variables
 
@@ -77,3 +77,14 @@ Start in paper mode first:
 LIVE_TRADING=false
 npm start
 ```
+
+
+## v1.1 Paper Wallet Tracker
+
+When `LIVE_TRADING=false`, the bot now uses a dedicated simulated cash wallet instead of the real SOL balance for position sizing. Set `PAPER_START_BALANCE_USD` to choose the starting bankroll.
+
+Railway logs show high-visibility emoji summaries for equity, cash, open-position value, lifetime P&L, realized/unrealized P&L, daily P&L, wins, losses, win rate, best trade and worst trade. Paper buys and sells are also written to `PAPER_LEDGER_FILE`.
+
+Optional simulated costs are controlled with `PAPER_TRACK_FEES`, `PAPER_TRACK_SLIPPAGE`, `PAPER_FEE_PCT`, and `PAPER_SLIPPAGE_PCT`. Defaults total 1.00% on paper exits so paper results are less optimistic.
+
+Important: Railway's normal filesystem may not survive redeploys. For long-term paper-wallet history, mount a Railway persistent volume and point `STATE_FILE` and `PAPER_LEDGER_FILE` into that mounted path.

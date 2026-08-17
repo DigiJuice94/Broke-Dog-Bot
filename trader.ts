@@ -33,6 +33,16 @@ export class Trader {
   private lastReconcileAt=0;
   private realizedToday=0;
   private pnlDay=new Date().toISOString().slice(0,10);
+  private paperCashUsd=config.paperStartBalanceUsd;
+  private paperRealizedUsd=0;
+  private paperWins=0;
+  private paperLosses=0;
+  private paperBestPct=-Infinity;
+  private paperWorstPct=Infinity;
+  private paperTradeCount=0;
+  private paperDayRealizedUsd=0;
+  private paperDay=new Date().toISOString().slice(0,10);
+  private lastPaperWalletLogAt=0;
 
   constructor(private wallet: WalletService, private jupiter: Jupiter) {
     this.solPrice = new SolPriceService(this.dex, this.jupiter);
@@ -42,16 +52,60 @@ export class Trader {
   async warmSolPrice() { await this.solPrice.warm(); }
 
   private saveState(){
-    try { const data={day:this.pnlDay,realizedToday:this.realizedToday,positions:[...this.positions.values()].map(p=>({...p,tokenAmountRaw:p.tokenAmountRaw.toString(),entrySolLamports:p.entrySolLamports.toString()}))}; writeFileSync(config.stateFile,JSON.stringify(data,null,2)); }
-    catch(e){ log.warn(`[STATE] save failed: ${e instanceof Error?e.message:String(e)}`); }
+    try {
+      const data={
+        day:this.pnlDay,realizedToday:this.realizedToday,
+        paper:{cashUsd:this.paperCashUsd,realizedUsd:this.paperRealizedUsd,wins:this.paperWins,losses:this.paperLosses,bestPct:Number.isFinite(this.paperBestPct)?this.paperBestPct:null,worstPct:Number.isFinite(this.paperWorstPct)?this.paperWorstPct:null,tradeCount:this.paperTradeCount,dayRealizedUsd:this.paperDayRealizedUsd,day:this.paperDay},
+        positions:[...this.positions.values()].map(p=>({...p,tokenAmountRaw:p.tokenAmountRaw.toString(),entrySolLamports:p.entrySolLamports.toString()}))
+      };
+      writeFileSync(config.stateFile,JSON.stringify(data,null,2));
+    } catch(e){ log.warn(`[STATE] save failed: ${e instanceof Error?e.message:String(e)}`); }
   }
   private loadState(){
     if(!existsSync(config.stateFile))return;
-    try { const raw=JSON.parse(readFileSync(config.stateFile,"utf8")); this.pnlDay=raw.day??this.pnlDay; this.realizedToday=Number(raw.realizedToday??0); for(const x of raw.positions??[]){this.positions.set(x.mint,{...x,tokenAmountRaw:BigInt(x.tokenAmountRaw),entrySolLamports:BigInt(x.entrySolLamports)});} log.info(`[STATE] restored ${this.positions.size} persisted position(s)`); }
-    catch(e){ log.warn(`[STATE] restore failed: ${e instanceof Error?e.message:String(e)}`); }
+    try {
+      const raw=JSON.parse(readFileSync(config.stateFile,"utf8"));
+      this.pnlDay=raw.day??this.pnlDay; this.realizedToday=Number(raw.realizedToday??0);
+      if(raw.paper){
+        this.paperCashUsd=Number(raw.paper.cashUsd??config.paperStartBalanceUsd);
+        this.paperRealizedUsd=Number(raw.paper.realizedUsd??0);
+        this.paperWins=Number(raw.paper.wins??0); this.paperLosses=Number(raw.paper.losses??0);
+        this.paperBestPct=raw.paper.bestPct==null?-Infinity:Number(raw.paper.bestPct);
+        this.paperWorstPct=raw.paper.worstPct==null?Infinity:Number(raw.paper.worstPct);
+        this.paperTradeCount=Number(raw.paper.tradeCount??(this.paperWins+this.paperLosses));
+        this.paperDayRealizedUsd=Number(raw.paper.dayRealizedUsd??0); this.paperDay=raw.paper.day??this.paperDay;
+      }
+      for(const x of raw.positions??[]){this.positions.set(x.mint,{...x,tokenAmountRaw:BigInt(x.tokenAmountRaw),entrySolLamports:BigInt(x.entrySolLamports)});}
+      log.info(`[STATE] restored ${this.positions.size} persisted position(s)`);
+    } catch(e){ log.warn(`[STATE] restore failed: ${e instanceof Error?e.message:String(e)}`); }
   }
-  private resetDailyIfNeeded(){const d=new Date().toISOString().slice(0,10);if(d!==this.pnlDay){this.pnlDay=d;this.realizedToday=0;this.saveState();}}
-  async initialize(){ this.loadState(); await this.reconcileWallet(true); }
+  private resetDailyIfNeeded(){
+    const d=new Date().toISOString().slice(0,10);
+    if(d!==this.pnlDay){this.pnlDay=d;this.realizedToday=0;}
+    if(d!==this.paperDay){this.paperDay=d;this.paperDayRealizedUsd=0;}
+  }
+  private paperCostsPct(){ return (config.paperTrackFees?config.paperFeePct:0)+(config.paperTrackSlippage?config.paperSlippagePct:0); }
+  private paperOpenValueUsd(prices?:Map<string,number>){
+    let total=0;
+    for(const p of this.positions.values()){ if(!p.paper)continue; const price=prices?.get(p.mint)??p.entryPriceUsd; total += p.entryUsd*(price/p.entryPriceUsd)*(1-this.paperCostsPct()/100); }
+    return total;
+  }
+  private logPaperWallet(prices?:Map<string,number>,force=false){
+    if(config.liveTrading)return;
+    const now=Date.now(); if(!force&&now-this.lastPaperWalletLogAt<config.paperWalletLogIntervalMs)return; this.lastPaperWalletLogAt=now;
+    const openValue=this.paperOpenValueUsd(prices); const equity=this.paperCashUsd+openValue;
+    const totalPnl=equity-config.paperStartBalanceUsd; const totalReturn=config.paperStartBalanceUsd>0?(totalPnl/config.paperStartBalanceUsd)*100:0;
+    const unrealized=equity-this.paperCashUsd-this.positionsArrayPaperCost();
+    const closed=this.paperWins+this.paperLosses; const winRate=closed?this.paperWins/closed*100:0;
+    const sign=(n:number)=>n>=0?"+":"";
+    log.info(`💰🐶 PAPER WALLET 🐶💰 | 💵 Equity:$${equity.toFixed(2)} | 🏦 Cash:$${this.paperCashUsd.toFixed(2)} | 📈 Open:$${openValue.toFixed(2)} | ${totalPnl>=0?"🟢":"🔴"} Total P&L:${sign(totalPnl)}$${totalPnl.toFixed(2)} (${sign(totalReturn)}${totalReturn.toFixed(1)}%) | ✅ Realized:${sign(this.paperRealizedUsd)}$${this.paperRealizedUsd.toFixed(2)} | 👀 Unrealized:${sign(unrealized)}$${unrealized.toFixed(2)} | 📅 Today:${sign(this.paperDayRealizedUsd)}$${this.paperDayRealizedUsd.toFixed(2)} | 🏆 W:${this.paperWins} 💀 L:${this.paperLosses} 🎯 WR:${winRate.toFixed(1)}%${Number.isFinite(this.paperBestPct)?` | 🔥 Best:${sign(this.paperBestPct)}${this.paperBestPct.toFixed(1)}%`:""}${Number.isFinite(this.paperWorstPct)?` | 🧊 Worst:${sign(this.paperWorstPct)}${this.paperWorstPct.toFixed(1)}%`:""}`);
+  }
+  private positionsArrayPaperCost(){ let total=0; for(const p of this.positions.values())if(p.paper)total+=p.entryUsd; return total; }
+  private appendPaperLedger(entry:any){
+    try{ let ledger:any[]=[]; if(existsSync(config.paperLedgerFile))ledger=JSON.parse(readFileSync(config.paperLedgerFile,"utf8")); if(!Array.isArray(ledger))ledger=[]; ledger.push(entry); writeFileSync(config.paperLedgerFile,JSON.stringify(ledger,null,2)); }
+    catch(e){ log.warn(`[PAPER LEDGER] save failed: ${e instanceof Error?e.message:String(e)}`); }
+  }
+  async initialize(){ this.loadState(); await this.reconcileWallet(true); if(!config.liveTrading)this.logPaperWallet(undefined,true); }
   private async reconcileWallet(force=false){
     if(!config.liveTrading||!this.wallet.address)return; const now=Date.now(); if(!force&&now-this.lastReconcileAt<config.reconcileIntervalMs)return; this.lastReconcileAt=now;
     try{
@@ -68,15 +122,17 @@ export class Trader {
     if (this.busy.has(c.token.address) || this.positions.has(c.token.address)) return;
     this.resetDailyIfNeeded(); await this.reconcileWallet();
     const open=this.positions.size, lane=c.entryLane??(c.score>=config.eliteScore?"ELITE":"NORMAL");
-    if(this.realizedToday<=-config.maxDailyLossUsd){c.state="FAILED";c.decisionReason=`NO BUY: daily loss limit reached $${this.realizedToday.toFixed(2)}`;log.warn(`[🛑 DAILY LOSS] ${c.token.name} skipped | ${c.decisionReason}`);return;}
+    const dailyPnl=config.liveTrading?this.realizedToday:this.paperDayRealizedUsd;
+    if(dailyPnl<=-config.maxDailyLossUsd){c.state="FAILED";c.decisionReason=`NO BUY: daily loss limit reached $${dailyPnl.toFixed(2)}`;log.warn(`[🛑 DAILY LOSS] ${c.token.name} skipped | ${c.decisionReason}`);return;}
     if(open>=3){c.state="FAILED";c.decisionReason="NO BUY: 3 position hard cap reached";log.warn(`[NO BUY] ${c.token.name} | ${c.decisionReason}`);return;}
     if(open>=config.maxOpenPositions && c.score<config.thirdPositionScore){c.state="FAILED";c.decisionReason=`NO BUY: 2 slots full; third slot requires score ${config.thirdPositionScore}+`;log.warn(`[NO BUY] ${c.token.name} | Score:${Math.round(c.score)} | ${c.decisionReason}`);return;}
     this.busy.add(c.token.address);
     try {
       const snap = c.snapshots.at(-1)!;
-      const [solBalance, solUsd] = await Promise.all([this.wallet.solBalance(), this.solPrice.get()]);
-      const spendableSol = Math.max(0, solBalance - config.solFeeReserve);
-      const spendableUsd = spendableSol * solUsd;
+      const solUsd = await this.solPrice.get();
+      const solBalance = config.liveTrading ? await this.wallet.solBalance() : this.paperCashUsd / Math.max(solUsd,0.000001);
+      const spendableSol = config.liveTrading ? Math.max(0, solBalance - config.solFeeReserve) : solBalance;
+      const spendableUsd = config.liveTrading ? spendableSol * solUsd : this.paperCashUsd;
       const usd = choosePositionUsd({
         score: c.score, confidence: c.dataConfidence, spendableUsd,
         routeQuality: snap.routeQuality ?? 50,
@@ -93,15 +149,19 @@ export class Trader {
       if (!entryPrice || entryPrice <= 0) throw new Error("entry price unavailable");
 
       if (!config.liveTrading) {
+        const walletBefore=this.paperCashUsd;
+        this.paperCashUsd=Math.max(0,this.paperCashUsd-usd);
         this.positions.set(c.token.address, {
           mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals:c.token.decimals || 6,
-          tokenAmountRaw:0n,entrySolLamports:lamports,entryUsd:usd,entryPriceUsd:entryPrice,
+          tokenAmountRaw:0n,entrySolLamports:lamports,entryUsd:usd,entryPriceUsd:entryPrice,paperEntryCostUsd:usd,
           openedAt:Date.now(),highPriceUsd:entryPrice,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane
         });
         c.state = "BOUGHT"; this.saveState();
-        log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥 PAPER FLAME BUY":"🧪 PAPER BUY",reason:`${lane} | would buy $${usd.toFixed(2)} (${sol.toFixed(5)} SOL) | Contract:${c.token.address} | now tracking paper position` });
+        log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥🐶 PAPER FLAME BUY":"🧪🐶 PAPER BUY",reason:`${lane} | 💵 Invested:$${usd.toFixed(2)} | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | 📍 Entry:$${entryPrice.toPrecision(6)} | CA:${c.token.address}` });
+        this.appendPaperLedger({type:"BUY",at:new Date().toISOString(),mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane,entryPriceUsd:entryPrice,investedUsd:usd,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,score:c.score,confidence:c.dataConfidence});
+        this.logPaperWallet(undefined,true);
         void this.notifier.send({
-          title: `🐱 PAPER BUY $${c.token.symbol}`,
+          title: `🐶 PAPER BUY $${c.token.symbol}`,
           message: `${c.token.name} ($${c.token.symbol}) | $${usd.toFixed(2)} | Score ${c.score}/100 | Entry $${entryPrice.toPrecision(6)} | Contract ${c.token.address}`,
           priority: "default", tags: ["chart_with_upwards_trend"]
         });
@@ -121,7 +181,7 @@ export class Trader {
       c.state = "BOUGHT"; this.saveState();
       log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥 FLAME BOUGHT":"🟢 BOUGHT",reason:`${lane} | $${usd.toFixed(2)} | Contract:${c.token.address} | tx ${result.signature}` });
       void this.notifier.send({
-        title: `🐱 BOUGHT $${c.token.symbol}`,
+        title: `🐶 BOUGHT $${c.token.symbol}`,
         message: `${c.token.name} ($${c.token.symbol}) | $${usd.toFixed(2)} | Score ${c.score}/100 | Entry $${actualEntryPrice.toPrecision(6)} | Contract ${c.token.address}`,
         priority: "high", tags: ["chart_with_upwards_trend"]
       });
@@ -159,7 +219,7 @@ export class Trader {
   }
 
   private rememberExit(p:Position, price:number, pnlPct:number){
-    this.resetDailyIfNeeded(); const realizedUsd=p.entryUsd*(pnlPct/100); this.realizedToday+=realizedUsd; this.saveState();
+    this.resetDailyIfNeeded(); const realizedUsd=p.entryUsd*(pnlPct/100); if(!p.paper)this.realizedToday+=realizedUsd; this.saveState();
     this.closedTracks.push({mint:p.mint,name:p.name,symbol:p.symbol,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,exitPnlPct:pnlPct,closedAt:Date.now(),logged:new Set(),socialAccounts:p.socialAccountsAtBuy??[]});
     this.closedTracks=this.closedTracks.filter(x=>Date.now()-x.closedAt<=65*60000);
   }
@@ -175,12 +235,23 @@ export class Trader {
     this.busy.add(p.mint);
     try {
       if (p.paper) {
+        this.resetDailyIfNeeded();
         const price = currentPrice ?? p.entryPriceUsd;
-        const outUsd = p.entryUsd * (price / p.entryPriceUsd);
-        const pnlPct = ((outUsd - p.entryUsd) / p.entryUsd) * 100;
+        const grossUsd = p.entryUsd * (price / p.entryPriceUsd);
+        const costPct=this.paperCostsPct();
+        const outUsd = grossUsd * (1-costPct/100);
+        const pnlUsd=outUsd-p.entryUsd;
+        const pnlPct = p.entryUsd>0 ? (pnlUsd/p.entryUsd)*100 : 0;
+        const walletBefore=this.paperCashUsd;
+        this.paperCashUsd += outUsd; this.paperRealizedUsd += pnlUsd; this.paperDayRealizedUsd += pnlUsd; this.paperTradeCount++;
+        if(pnlUsd>=0)this.paperWins++; else this.paperLosses++;
+        this.paperBestPct=Math.max(this.paperBestPct,pnlPct); this.paperWorstPct=Math.min(this.paperWorstPct,pnlPct);
         this.positions.delete(p.mint);
         this.rememberExit(p,price,pnlPct); this.saveState();
-        log.info(`[SELL] ${p.name} ($${p.symbol}) | 💰 PAPER SOLD | ${reason} | value≈$${outUsd.toFixed(2)} | P/L ${pnlPct>=0?"+":""}${pnlPct.toFixed(1)}%`);
+        const icon=pnlUsd>=0?"✅💰":"🛑💀";
+        log.info(`${icon} PAPER SELL COMPLETE | 🪙 ${p.name} ($${p.symbol}) | ${reason} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Returned:$${outUsd.toFixed(2)} | ${pnlUsd>=0?"🟢 PROFIT":"🔴 LOSS"}:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${pnlPct>=0?"🚀":"📉"} ROI:${pnlPct>=0?"+":""}${pnlPct.toFixed(1)}% | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | sim costs:${costPct.toFixed(2)}%`);
+        this.appendPaperLedger({type:"SELL",at:new Date().toISOString(),mint:p.mint,name:p.name,symbol:p.symbol,lane:p.lane,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,investedUsd:p.entryUsd,returnedUsd:outUsd,pnlUsd,pnlPct,reason,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,simulatedCostsPct:costPct});
+        this.logPaperWallet(undefined,true);
         void this.notifier.send({
           title: `💰 PAPER SOLD $${p.symbol}`,
           message: `${p.name} ($${p.symbol}) | ${reason} | Value $${outUsd.toFixed(2)} | P/L ${pnlPct>=0?"+":""}${pnlPct.toFixed(1)}%`,
@@ -244,12 +315,17 @@ export class Trader {
     const mm = Math.floor(ageSec/60).toString().padStart(2,"0");
     const ss = (ageSec%60).toString().padStart(2,"0");
     const chartValue = p.entryUsd * (price/p.entryPriceUsd);
-    const status = p.paper ? "🧪 PAPER HOLDING" : "🟢 HOLDING";
+    const status = p.paper ? (chartPnl>=0?"👀🟢 PAPER POSITION":"👀🔴 PAPER POSITION") : "🟢 HOLDING";
     const score = p.scoreAtBuy == null ? "?" : `${p.scoreAtBuy}/100`;
     const real = executable
       ? ` | ExitNow:$${executable.outUsd.toFixed(2)} | REAL P/L:${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | Exit/Dex:${(executable.valueRatio*100).toFixed(0)}%`
       : "";
-    log.info(`[CURRENT TRADE ${index}/${total}] ${status} | ${p.name} ($${p.symbol}) | Entry:$${p.entryPriceUsd.toPrecision(6)} | Current:$${price.toPrecision(6)} | Position:$${p.entryUsd.toFixed(2)} | ChartValue≈$${chartValue.toFixed(2)} | Chart P/L:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}%${real} | Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | Held:${mm}:${ss} | Lane:${p.lane??"NORMAL"}${p.basisUnknown?"/RECOVERED":""} | BuyScore:${score} | CA:${p.mint}`);
+    if(p.paper){
+      const netValue=chartValue*(1-this.paperCostsPct()/100); const pnlUsd=netValue-p.entryUsd;
+      log.info(`👀🐶 PAPER POSITION ${index}/${total} | 🪙 ${p.name} ($${p.symbol}) | 📍 Entry:$${p.entryPriceUsd.toPrecision(6)} | 💲 Current:$${price.toPrecision(6)} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Value:$${netValue.toFixed(2)} | ${pnlUsd>=0?"🟢":"🔴"} P&L:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${chartPnl>=0?"🚀":"📉"} ROI:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | 👑 Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | ⏱️ Held:${mm}:${ss} | ${p.lane==="FLAME"?"🔥":"🎯"} Lane:${p.lane??"NORMAL"} | Score:${score} | CA:${p.mint}`);
+    } else {
+      log.info(`[CURRENT TRADE ${index}/${total}] ${status} | ${p.name} ($${p.symbol}) | Entry:$${p.entryPriceUsd.toPrecision(6)} | Current:$${price.toPrecision(6)} | Position:$${p.entryUsd.toFixed(2)} | ChartValue≈$${chartValue.toFixed(2)} | Chart P/L:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}%${real} | Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | Held:${mm}:${ss} | Lane:${p.lane??"NORMAL"}${p.basisUnknown?"/RECOVERED":""} | BuyScore:${score} | CA:${p.mint}`);
+    }
   }
 
   async monitorPositions() {
@@ -261,6 +337,7 @@ export class Trader {
       if (now-this.lastIdleStatusAt >= config.idlePositionStatusIntervalMs) {
         this.lastIdleStatusAt = now;
         log.info(`[OPEN POSITIONS] 0 | 💤 Waiting for runner`);
+        if(!config.liveTrading)this.logPaperWallet(undefined);
       }
       return;
     }
@@ -269,6 +346,7 @@ export class Trader {
     if (shouldLogStatus) this.lastStatusAt = now;
 
     const market = await this.dex.batch(positions.map(p=>p.mint));
+    if(!config.liveTrading){const prices=new Map<string,number>(); for(const p of positions){const px=market.get(p.mint)?.priceUsd;if(px)prices.set(p.mint,px);} this.logPaperWallet(prices);}
     let index = 0;
     for (const p of positions) {
       index++;
