@@ -88,3 +88,11 @@ Railway logs show high-visibility emoji summaries for equity, cash, open-positio
 Optional simulated costs are controlled with `PAPER_TRACK_FEES`, `PAPER_TRACK_SLIPPAGE`, `PAPER_FEE_PCT`, and `PAPER_SLIPPAGE_PCT`. Defaults total 1.00% on paper exits so paper results are less optimistic.
 
 Important: Railway's normal filesystem may not survive redeploys. For long-term paper-wallet history, mount a Railway persistent volume and point `STATE_FILE` and `PAPER_LEDGER_FILE` into that mounted path.
+
+
+## 🧠 Dog Brain v1 (v1.2)
+Dog Brain is a controlled self-learning layer for PAPER mode. It records every evaluated candidate, freezes the decision-time feature vector, then follows bought and rejected coins at 1m, 5m, 15m, 30m and 1h. It learns separate NORMAL and FLAME feature weights from runner/dump outcomes.
+
+Guardrails: learning is disabled for live-mode scoring, requires a minimum sample count, feature weights and daily movement are capped, total learned score adjustment is capped, hard route/on-chain/rug gates remain outside the learner, and a paper-performance deterioration window resets learned weights automatically. State persists in `broke-dog-brain-v1.json` by default.
+
+Logs use `🧠🐶`, including missed runners, avoided rugs/dumps, learned outcomes and the daily learning report.

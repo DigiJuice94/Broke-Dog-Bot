@@ -11,6 +11,7 @@ import { MobulaAxiomDiscovery } from "./mobula.ts";
 import { SocialIntel } from "./social.ts";
 import { SmartMoneyIntel } from "./smartMoney.ts";
 import { analyzeRisk, normalRiskGate, flameRiskGate } from "./risk.ts";
+import { dogBrain } from "./dogBrain.ts";
 
 export class Scanner {
   readonly candidates = new Map<string, Candidate>();
@@ -169,7 +170,7 @@ export class Scanner {
         bundleRisk:bundle.risk,bundleStatus:doBundle?(bundle.status==="ok"?"ok":bundle.status==="error"?"error":"unknown"):"skipped",
         buyRoute:route.buy,sellRoute:route.sell,routeQuality:route.quality};
       c.snapshots.push(snap); if(c.snapshots.length>12)c.snapshots.shift();
-      let scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason;
+      let scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; dogBrain.observe(c);
 
       // Same-cycle finalist escalation: if the NEW data collected above pushes a
       // candidate across the buy threshold, do not wait for the next scanner tick.
@@ -200,7 +201,7 @@ export class Scanner {
           tasks.push(analyzeRisk(c.token.address,c.token.listedAt).then(r=>{snap.onChainRisk=r;}));
         }
         if(tasks.length) await Promise.all(tasks);
-        scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason;
+        scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; dogBrain.observe(c);
       }
 
       // Hybrid entry lanes: strict v8.3-style normal entries plus a calculated-risk early-runner FLAME exception.
@@ -238,7 +239,7 @@ export class Scanner {
       } else if(age>=config.maxObservationMs){
         c.state="DROPPED";c.lastDroppedAt=Date.now();
         const why=!routesOK?"buy/sell route unavailable":c.score<config.buyScore?`score ${Math.round(c.score)} < ${config.buyScore}`:c.dataConfidence<config.minDataConfidence?`data ${Math.round(c.dataConfidence)}% < ${config.minDataConfidence}%`:!strictRisk.ok?strictRisk.why:"observation ended";
-        c.decisionReason=`NO BUY: ${why}`;
+        c.decisionReason=`NO BUY: ${why}`; dogBrain.markDecision(c,"REJECTED");
       } else {
         c.state=c.score>=config.promoteScore?"DEVELOPING":"WATCHING";
         if(c.score>=config.buyScore&&!strictRisk.ok)c.decisionReason=`WAITING SAFETY: ${strictRisk.why}`;
@@ -256,6 +257,7 @@ export class Scanner {
   }
 
   async tick(){
+    await dogBrain.tick();
     const now=Date.now(); if(now-this.lastDiscovery>=config.discoveryIntervalMs){this.lastDiscovery=now;await this.discover();}
     const active=[...this.candidates.values()].filter(c=>!["DROPPED","BOUGHT","FAILED"].includes(c.state)).sort((a,b)=>this.priority(b)-this.priority(a));
     const dex=await this.dex.batch(active.map(c=>c.token.address));

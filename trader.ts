@@ -9,6 +9,7 @@ import { DexScreener } from "./dexscreener.ts";
 import { SolPriceService } from "./solPrice.ts";
 import { socialPerformance } from "./socialPerformance.ts";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { dogBrain } from "./dogBrain.ts";
 
 type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;exitPnlPct:number;closedAt:number;logged:Set<number>;socialAccounts:string[]};
 
@@ -156,7 +157,7 @@ export class Trader {
           tokenAmountRaw:0n,entrySolLamports:lamports,entryUsd:usd,entryPriceUsd:entryPrice,paperEntryCostUsd:usd,
           openedAt:Date.now(),highPriceUsd:entryPrice,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane
         });
-        c.state = "BOUGHT"; this.saveState();
+        c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
         log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥🐶 PAPER FLAME BUY":"🧪🐶 PAPER BUY",reason:`${lane} | 💵 Invested:$${usd.toFixed(2)} | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | 📍 Entry:$${entryPrice.toPrecision(6)} | CA:${c.token.address}` });
         this.appendPaperLedger({type:"BUY",at:new Date().toISOString(),mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane,entryPriceUsd:entryPrice,investedUsd:usd,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,score:c.score,confidence:c.dataConfidence});
         this.logPaperWallet(undefined,true);
@@ -178,7 +179,7 @@ export class Trader {
         entrySolLamports:result.inRaw,entryUsd:usd,entryPriceUsd:actualEntryPrice,openedAt:Date.now(),highPriceUsd:actualEntryPrice,
         signature:result.signature,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:false,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane
       });
-      c.state = "BOUGHT"; this.saveState();
+      c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
       log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥 FLAME BOUGHT":"🟢 BOUGHT",reason:`${lane} | $${usd.toFixed(2)} | Contract:${c.token.address} | tx ${result.signature}` });
       void this.notifier.send({
         title: `🐶 BOUGHT $${c.token.symbol}`,
@@ -247,6 +248,7 @@ export class Trader {
         if(pnlUsd>=0)this.paperWins++; else this.paperLosses++;
         this.paperBestPct=Math.max(this.paperBestPct,pnlPct); this.paperWorstPct=Math.min(this.paperWorstPct,pnlPct);
         this.positions.delete(p.mint);
+        dogBrain.recordTradeClose(p,pnlPct,reason);
         this.rememberExit(p,price,pnlPct); this.saveState();
         const icon=pnlUsd>=0?"✅💰":"🛑💀";
         log.info(`${icon} PAPER SELL COMPLETE | 🪙 ${p.name} ($${p.symbol}) | ${reason} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Returned:$${outUsd.toFixed(2)} | ${pnlUsd>=0?"🟢 PROFIT":"🔴 LOSS"}:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${pnlPct>=0?"🚀":"📉"} ROI:${pnlPct>=0?"+":""}${pnlPct.toFixed(1)}% | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | sim costs:${costPct.toFixed(2)}%`);

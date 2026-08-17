@@ -5,12 +5,13 @@ import { Scanner } from "./scanner.ts";
 import { Trader } from "./trader.ts";
 import { WalletService } from "./wallet.ts";
 import { log } from "./log.ts";
+import { dogBrain } from "./dogBrain.ts";
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
 async function main(){
   const wallet=new WalletService(),birdeye=new Birdeye(),jupiter=new Jupiter(wallet),trader=new Trader(wallet,jupiter);
   const scanner=new Scanner(birdeye,jupiter,c=>trader.buy(c));
-  log.info("🐶 BROKE DOG BOT v1.1 — HYBRID + PAPER WALLET TRACKER");
+  log.info("🐶 BROKE DOG BOT v1.2 — DOG BRAIN SELF-LEARNING + PAPER WALLET");
   log.info(`Mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER TRADING"}`); log.info(`Wallet: ${wallet.address??"NOT CONFIGURED"}`);
   log.info(`Entries: NORMAL ≥${config.buyScore} | ELITE ≥${config.eliteScore} | 🔥 FLAME ≥${config.flameMinScore} + early-runner pressure | observation ${config.minObservationMs/1000}-${config.maxObservationMs/1000}s`);
   log.info(`Discovery: Social watchlist + Mobula/Axiom-style + Birdeye + DEX/FOMO | v8.3-style Helius launch/holder safety added`);
@@ -20,6 +21,7 @@ async function main(){
   log.info(`Birdeye: new ${Math.round(config.birdeyeNewIntervalMs/60000)}m | trending ${Math.round(config.birdeyeTrendingIntervalMs/60000)}m | deep top ${config.birdeyeDeepCandidates} at score ≥${config.birdeyeDeepMinScore} | CU budget ${config.birdeyeCuBudgetPerHour}/hr`);
   log.info(`Positions: 2 normal slots + reserved 3rd slot for score ${config.thirdPositionScore}+ | max allocation ${config.maxPositionWalletPct}% | daily loss brake $${config.maxDailyLossUsd}`);
   if(!config.liveTrading)log.info(`💰🐶 Paper wallet: starts $${config.paperStartBalanceUsd.toFixed(2)} | simulated costs ${(config.paperTrackFees?config.paperFeePct:0)+(config.paperTrackSlippage?config.paperSlippagePct:0)}% | persistent ledger ${config.paperLedgerFile}`);
+  log.info(`🧠 ${dogBrain.startupText()} | checkpoints 1m/5m/15m/30m/1h | max learned score ±${config.dogBrainMaxScoreAdjustment}`);
   log.info(`SOL/USD: background cache | Coinbase → DEX Screener → Jupiter emergency fallback | refresh ${Math.round(config.solUsdRefreshMs/1000)}s`);
   if(!config.xBearerToken)log.warn("X_BEARER_TOKEN missing — expected/OK. Social/meta discovery is skipped; market + on-chain scoring continue normally.");
   if(!config.mobulaApiKey)log.warn("MOBULA_API_KEY missing — popular Axiom-style runner discovery unavailable; bot will use fallbacks.");
