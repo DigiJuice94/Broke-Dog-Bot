@@ -15,8 +15,36 @@ const n = (...xs: unknown[]): number | undefined => {
 };
 
 export class DexScreener {
-  private cache = new Map<string, CacheEntry>();
-  private solUsdCache?: { at:number; value:number };
+  // Shared across Scanner + Trader instances so they do not independently hammer
+  // DEX Screener from the same Railway service/IP.
+  private static cache = new Map<string, CacheEntry>();
+  private static solUsdCache?: { at:number; value:number };
+  private static requestChain: Promise<void> = Promise.resolve();
+  private static lastRequestAt = 0;
+  private static blockedUntil = 0;
+
+  private async dexJson(url:string): Promise<any> {
+    let release!:()=>void;
+    const prior = DexScreener.requestChain;
+    DexScreener.requestChain = new Promise<void>(r=>{ release=r; });
+    await prior;
+    try {
+      const now=Date.now();
+      if(now < DexScreener.blockedUntil) throw new Error(`rate-limit cooldown ${Math.ceil((DexScreener.blockedUntil-now)/1000)}s`);
+      const wait=Math.max(0,config.dexMinIntervalMs-(now-DexScreener.lastRequestAt));
+      if(wait) await new Promise(r=>setTimeout(r,wait));
+      DexScreener.lastRequestAt=Date.now();
+      try { return await getJson(url,{"accept":"application/json","user-agent":"BrokeDogBot/1.4.1"},config.dexTimeoutMs); }
+      catch(e){
+        const msg=e instanceof Error?e.message:String(e);
+        if(/\b429\b|1015|rate limit/i.test(msg)){
+          DexScreener.blockedUntil=Date.now()+config.dexRateLimitBackoffMs;
+          throw new Error(`rate limited — cooling down DEX Screener for ${Math.round(config.dexRateLimitBackoffMs/1000)}s`);
+        }
+        throw e;
+      }
+    } finally { release(); }
+  }
 
   private choosePair(pairs: any[], address?: string) {
     const relevant = address ? pairs.filter(p => p?.baseToken?.address === address || p?.quoteToken?.address === address) : pairs;
@@ -34,7 +62,7 @@ export class DexScreener {
       { url:"https://api.dexscreener.com/token-boosts/latest/v1", source:"dex-boost", cap:5 },
       { url:"https://api.dexscreener.com/token-boosts/top/v1", source:"dex-boost-top", cap:5 },
     ];
-    const settled = await Promise.allSettled(feeds.map(f => getJson(f.url, {}, config.dexTimeoutMs)));
+    const settled = await Promise.allSettled(feeds.map(f => this.dexJson(f.url)));
     const byAddress = new Map<string, DiscoveredToken>();
 
     // Take a balanced slice from every feed. Previously the first feed could fill
@@ -86,7 +114,7 @@ export class DexScreener {
     const missing: string[] = [];
 
     for (const address of unique) {
-      const cached = this.cache.get(address);
+      const cached = DexScreener.cache.get(address);
       if (cached && now - cached.at < config.dexCacheMs) out.set(address, cached.value as any);
       else missing.push(address);
     }
@@ -94,7 +122,7 @@ export class DexScreener {
 
     try {
       const url = `https://api.dexscreener.com/tokens/v1/solana/${missing.map(encodeURIComponent).join(",")}`;
-      const raw = await getJson(url, {}, config.dexTimeoutMs);
+      const raw = await this.dexJson(url);
       const pairs = Array.isArray(raw) ? raw : Array.isArray(raw?.pairs) ? raw.pairs : [];
       const grouped = new Map<string, any[]>();
       for (const p of pairs) {
@@ -126,30 +154,32 @@ export class DexScreener {
           tokenSymbol: token?.symbol,
           pairCreatedAt: n(pair.pairCreatedAt),
         } as any;
-        this.cache.set(address, { at: now, value });
+        DexScreener.cache.set(address, { at: now, value });
         out.set(address, value);
       }
     } catch (e) {
-      log.warn(`[DEX] batch enrichment failed: ${e instanceof Error ? e.message : String(e)}`);
+      const msg=e instanceof Error ? e.message : String(e);
+      if(/cooldown|rate limited/i.test(msg)) log.warn(`[DEX] enrichment paused: ${msg}`);
+      else log.warn(`[DEX] batch enrichment failed: ${msg}`);
     }
     return out;
   }
 
   getCachedSolPrice(maxAgeMs = config.solUsdStaleMs): number | undefined {
-    if (!this.solUsdCache || Date.now()-this.solUsdCache.at > maxAgeMs) return undefined;
-    return this.solUsdCache.value;
+    if (!DexScreener.solUsdCache || Date.now()-DexScreener.solUsdCache.at > maxAgeMs) return undefined;
+    return DexScreener.solUsdCache.value;
   }
 
   /** Free SOL/USD fallback so position sizing/exits do not consume Birdeye CUs. */
   async solPriceUsd(): Promise<number> {
-    if (this.solUsdCache && Date.now()-this.solUsdCache.at < 60_000) return this.solUsdCache.value;
-    const raw = await getJson("https://api.dexscreener.com/latest/dex/search?q=SOL%2FUSDC", {}, config.dexTimeoutMs);
+    if (DexScreener.solUsdCache && Date.now()-DexScreener.solUsdCache.at < 60_000) return DexScreener.solUsdCache.value;
+    const raw = await this.dexJson("https://api.dexscreener.com/latest/dex/search?q=SOL%2FUSDC");
     const pairs = Array.isArray(raw?.pairs) ? raw.pairs : [];
     const candidates = pairs.filter((p:any)=>p?.chainId==="solana" && p?.baseToken?.address===SOL_MINT && n(p?.priceUsd));
     const pair = this.choosePair(candidates);
     const price = n(pair?.priceUsd);
     if (!price) throw new Error("Could not read SOL/USD from DEX Screener");
-    this.solUsdCache={at:Date.now(),value:price};
+    DexScreener.solUsdCache={at:Date.now(),value:price};
     return price;
   }
 }

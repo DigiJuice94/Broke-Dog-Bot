@@ -3,7 +3,11 @@ export async function getJson(url: string, headers: Record<string,string> = {}, 
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(url, { headers, signal: ctl.signal });
-    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    if (!r.ok) {
+      const text = (await r.text()).replace(/\s+/g, " ").trim();
+      const short = text.length > 240 ? `${text.slice(0,240)}…` : text;
+      throw new Error(`${r.status}${short ? ` ${short}` : ""}`);
+    }
     return await r.json();
   } finally { clearTimeout(t); }
 }
@@ -17,7 +21,11 @@ export async function postJson(url: string, body: unknown, headers: Record<strin
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body)
     });
-    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    if (!r.ok) {
+      const text = (await r.text()).replace(/\s+/g, " ").trim();
+      const short = text.length > 240 ? `${text.slice(0,240)}…` : text;
+      throw new Error(`${r.status}${short ? ` ${short}` : ""}`);
+    }
     return await r.json();
   } finally { clearTimeout(t); }
 }

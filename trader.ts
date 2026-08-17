@@ -56,7 +56,7 @@ export class Trader {
     try {
       const data={
         day:this.pnlDay,realizedToday:this.realizedToday,
-        paper:{cashUsd:this.paperCashUsd,realizedUsd:this.paperRealizedUsd,wins:this.paperWins,losses:this.paperLosses,bestPct:Number.isFinite(this.paperBestPct)?this.paperBestPct:null,worstPct:Number.isFinite(this.paperWorstPct)?this.paperWorstPct:null,tradeCount:this.paperTradeCount,dayRealizedUsd:this.paperDayRealizedUsd,day:this.paperDay},
+        paper:{baseBalanceUsd:config.paperStartBalanceUsd,cashUsd:this.paperCashUsd,realizedUsd:this.paperRealizedUsd,wins:this.paperWins,losses:this.paperLosses,bestPct:Number.isFinite(this.paperBestPct)?this.paperBestPct:null,worstPct:Number.isFinite(this.paperWorstPct)?this.paperWorstPct:null,tradeCount:this.paperTradeCount,dayRealizedUsd:this.paperDayRealizedUsd,day:this.paperDay},
         positions:[...this.positions.values()].map(p=>({...p,tokenAmountRaw:p.tokenAmountRaw.toString(),entrySolLamports:p.entrySolLamports.toString()}))
       };
       writeFileSync(config.stateFile,JSON.stringify(data,null,2));
@@ -69,6 +69,17 @@ export class Trader {
       this.pnlDay=raw.day??this.pnlDay; this.realizedToday=Number(raw.realizedToday??0);
       if(raw.paper){
         this.paperCashUsd=Number(raw.paper.cashUsd??config.paperStartBalanceUsd);
+        // v1.4.2 bankroll migration: preserve existing P&L/open positions while funding
+        // legacy paper wallets from the old $25 base up to the configured $1,000 base once.
+        const savedBase=Number(raw.paper.baseBalanceUsd??25);
+        if(!config.liveTrading && Number.isFinite(savedBase) && savedBase!==config.paperStartBalanceUsd){
+          const fundingDelta=config.paperStartBalanceUsd-savedBase;
+          this.paperCashUsd=Math.max(0,this.paperCashUsd+fundingDelta);
+          raw.paper.baseBalanceUsd=config.paperStartBalanceUsd;
+          raw.paper.cashUsd=this.paperCashUsd;
+          try{writeFileSync(config.stateFile,JSON.stringify(raw,null,2));}catch{}
+          log.info(`💵🐶 PAPER BANKROLL UPDATED | base $${savedBase.toFixed(2)} → $${config.paperStartBalanceUsd.toFixed(2)} | cash adjusted ${fundingDelta>=0?"+":""}$${fundingDelta.toFixed(2)} | existing P&L/positions preserved`);
+        }
         this.paperRealizedUsd=Number(raw.paper.realizedUsd??0);
         this.paperWins=Number(raw.paper.wins??0); this.paperLosses=Number(raw.paper.losses??0);
         this.paperBestPct=raw.paper.bestPct==null?-Infinity:Number(raw.paper.bestPct);
@@ -134,11 +145,16 @@ export class Trader {
       const solBalance = config.liveTrading ? await this.wallet.solBalance() : this.paperCashUsd / Math.max(solUsd,0.000001);
       const spendableSol = config.liveTrading ? Math.max(0, solBalance - config.solFeeReserve) : solBalance;
       const spendableUsd = config.liveTrading ? spendableSol * solUsd : this.paperCashUsd;
-      const usd = choosePositionUsd({
+      let usd = choosePositionUsd({
         score: c.score, confidence: c.dataConfidence, spendableUsd,
         routeQuality: snap.routeQuality ?? 50,
         multiTrend: c.sources.has("axiom") && c.sources.has("fomo"), lane, openPositions:open
       });
+      // A larger paper bankroll is for more learning samples, not oversized simulated bets.
+      if (!config.liveTrading) {
+        const paperCap = lane === "FLAME" ? config.paperFlameMaxUsd : lane === "ELITE" ? config.paperEliteMaxUsd : config.paperNormalMaxUsd;
+        usd = Math.min(usd, paperCap);
+      }
       if (usd < config.minPositionUsd) {
         c.state = "FAILED"; c.decisionReason = `NO BUY: spendable balance below $${config.minPositionUsd}`;
         dogBrain.markDecision(c,"REJECTED");

@@ -1,4 +1,11 @@
-# Broke Dog Bot v1.4.0
+# Broke Dog Bot v1.4.2 — DEX Rate-Limit + $1,000 Paper Bankroll
+
+**v1.4.2 changes:**
+- Paper wallet default starting bankroll is now **$1,000**.
+- Existing v1.4.x paper state is funded from the legacy $25 base to the new $1,000 base **once**, preserving existing P&L and open paper positions.
+- Paper sizing stays controlled: **NORMAL max $25, ELITE max $35, FLAME max $50** by default.
+- Keeps all v1.4.1 DEX Screener 429 / Cloudflare 1015 rate-limit protection.
+- Override with `PAPER_START_BALANCE_USD`, `PAPER_NORMAL_MAX_USD`, `PAPER_ELITE_MAX_USD`, and `PAPER_FLAME_MAX_USD`.
 
 This is a new bot codebase built to combine the strongest behavior of two prior bots:
 
@@ -107,7 +114,7 @@ The standard NORMAL buy threshold is now **75/100** by default (`BUY_SCORE=75`).
 Dog Bot no longer lets a full 24-coin watch pool starve new discoveries. The active pool now defaults to 36, discovery targets up to 18 fresh candidates per cycle, Mobula rotates through a 50-token ranked result set, and stale sub-50 candidates older than 90 seconds can be rotated out to make room. Logs now show `fresh-cycle` and `unique-today` so you can see how many different coins the bot is actually trying. Promising/READY candidates are never evicted by the freshness rotation, and normal safety gates remain unchanged.
 
 
-## v1.4.0 — Faster Safety + More Learning Data
+## v1.4.1 — Faster Safety + More Learning Data
 
 Paper mode now uses a deliberately simpler decision path so Dog Brain can collect enough real examples to learn from:
 
@@ -123,3 +130,13 @@ Extra Birdeye, bundle, route, smart-money and deep launch/funder work is still u
 Paper-mode route availability is recorded but does not block a simulated trade. Live mode remains stricter: executable Jupiter routes and the strict on-chain safety gate are still required.
 
 Paper defaults are also tuned to create more learning samples: `PAPER_MIN_OBSERVATION_MS=10000` and `PAPER_MIN_DATA_CONFIDENCE=60`. Candidates skipped because the wallet/position cap, daily loss brake, insufficient paper cash, or a failed buy are now explicitly recorded as rejected decisions so Dog Brain can follow them counterfactually instead of losing the sample.
+
+
+## v1.4.1 — DEX Rate-Limit Protection
+- Scanner and Trader now share one DEX Screener request throttle and cache.
+- DEX calls are spaced by default at least 1.2s apart.
+- Discovery feeds run every 60s by default instead of every 15s.
+- Token enrichment is cached for 30s by default.
+- HTTP 429 / Cloudflare 1015 triggers a 90s DEX cooldown instead of repeated hammering.
+- Error logs truncate HTML bodies so Railway logs stay readable.
+- Dog Brain and paper trading continue using cached/other-source data during DEX cooldowns.
