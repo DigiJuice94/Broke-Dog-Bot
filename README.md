@@ -100,3 +100,8 @@ Logs use `🧠🐶`, including missed runners, avoided rugs/dumps, learned outco
 ## v1.2.2 buy threshold
 
 The standard NORMAL buy threshold is now **75/100** by default (`BUY_SCORE=75`). Scores at or above 75 are buy-eligible only after the existing route, data-confidence, observation, and hard safety/rug checks pass. Dog Brain learned score adjustments continue to operate within their configured caps.
+
+
+## v1.3.0 — Fresh Discovery Rotation
+
+Dog Bot no longer lets a full 24-coin watch pool starve new discoveries. The active pool now defaults to 36, discovery targets up to 18 fresh candidates per cycle, Mobula rotates through a 50-token ranked result set, and stale sub-50 candidates older than 90 seconds can be rotated out to make room. Logs now show `fresh-cycle` and `unique-today` so you can see how many different coins the bot is actually trying. Promising/READY candidates are never evicted by the freshness rotation, and normal safety gates remain unchanged.

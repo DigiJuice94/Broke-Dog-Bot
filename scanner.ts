@@ -24,13 +24,36 @@ export class Scanner {
   private mobula = new MobulaAxiomDiscovery();
   private social = new SocialIntel();
   private smartMoney: SmartMoneyIntel;
+  private scannedToday = new Set<string>();
+  private scannedDay = "";
+  private mobulaCursor = 0;
   constructor(private birdeye: Birdeye, private jupiter: Jupiter, private onReady: (c: Candidate) => Promise<void>) { this.smartMoney=new SmartMoneyIntel(birdeye); }
 
   private activeCount() {
     return [...this.candidates.values()].filter(c=>!["DROPPED","BOUGHT","FAILED"].includes(c.state)).length;
   }
 
-  private add(t: DiscoveredToken) {
+  private resetDailyUnique(now=Date.now()) {
+    const day=new Date(now).toISOString().slice(0,10);
+    if(this.scannedDay!==day){ this.scannedDay=day; this.scannedToday.clear(); }
+  }
+
+  private evictForFresh(now:number) {
+    const eligible=[...this.candidates.values()].filter(c=>
+      !["DROPPED","BOUGHT","FAILED","READY"].includes(c.state) &&
+      now-c.firstSeenAt>=config.staleEvictAgeMs &&
+      c.score<config.staleEvictScore
+    ).sort((a,b)=>this.priority(a)-this.priority(b) || a.firstSeenAt-b.firstSeenAt);
+    const victim=eligible[0];
+    if(!victim)return false;
+    victim.state="DROPPED";
+    victim.lastDroppedAt=now;
+    victim.decisionReason=`ROTATED OUT: stale score ${Math.round(victim.score)} to make room for fresh discovery`;
+    log.info(`[ROTATE] ${victim.token.name} ($${victim.token.symbol}) out | score:${Math.round(victim.score)} age:${Math.round((now-victim.firstSeenAt)/1000)}s | fresh slot opened`);
+    return true;
+  }
+
+  private add(t: DiscoveredToken, forceFresh=false): "new"|"existing"|"blocked" {
     const now = Date.now();
     const existing = this.candidates.get(t.address);
     if (existing) {
@@ -71,11 +94,14 @@ export class Scanner {
           log.info(`[REWATCH] ${existing.token.name} ($${existing.token.symbol}) | fresh 30-90s observation | source:${t.source}`);
         }
       }
-      return;
+      return "existing";
     }
-    if (this.activeCount()>=config.maxActiveCandidates) return;
+    if (this.activeCount()>=config.maxActiveCandidates) {
+      if(!forceFresh || !this.evictForFresh(now) || this.activeCount()>=config.maxActiveCandidates) return "blocked";
+    }
     this.candidates.set(t.address,{token:t,firstSeenAt:now,lastSeenAt:now,sources:new Set([t.source]),
       trendingRanks:t.rank==null?{}:{[t.source]:t.rank},previousTrendingRanks:{},rankMovement:{},snapshots:[],score:0,dataConfidence:0,state:"WATCHING",collecting:false,watchCycles:1});
+    return "new";
   }
 
   private pruneKnown() {
@@ -85,9 +111,9 @@ export class Scanner {
     }
   }
 
-  private async birdeyeFeed(label:string, due:boolean, fn:()=>Promise<DiscoveredToken[]>) {
+  private async birdeyeFeed(label:string, due:boolean, fn:()=>Promise<DiscoveredToken[]>, adder:(t:DiscoveredToken)=>unknown=(t)=>this.add(t)) {
     if (!due || !this.birdeye.isCuAvailable()) return;
-    try { for (const t of await fn()) this.add(t); }
+    try { for (const t of await fn()) adder(t); }
     catch(e) {
       const m=e instanceof Error?e.message:String(e);
       if (!m.toLowerCase().includes("cooldown")) log.warn(`[DISCOVERY ${label}] ${m}`);
@@ -96,41 +122,57 @@ export class Scanner {
 
   private async discover() {
     await this.social.poll();
-    for(const t of this.social.discoveredTokens()) this.add(t);
+    let freshThisCycle=0;
+    const tryAdd=(t:DiscoveredToken)=>{
+      const isFresh=!this.candidates.has(t.address);
+      const force=isFresh && freshThisCycle<config.freshCandidatesPerCycle;
+      const result=this.add(t,force);
+      if(result==="new")freshThisCycle++;
+      return result;
+    };
+    for(const t of this.social.discoveredTokens()) tryAdd(t);
     const now=Date.now();
-    // PRIMARY trending lane: Mobula Pulse recreates Axiom-style discovery with ranked Solana tokens.
-    // It is intentionally queried before DEX/new-token fallbacks so popular runners get scanner capacity first.
-    try { for(const t of (await this.mobula.trending()).slice(0,config.mobulaActiveSlots)) this.add(t); }
-    catch(e){ log.warn(`[MOBULA DISCOVERY] ${e instanceof Error?e.message:String(e)}`); }
+    this.resetDailyUnique(now);
+    // PRIMARY trending lane: rotate through a larger Mobula result set instead of
+    // hammering the same top 12 every cycle. This keeps hot coins while continuously
+    // exposing Dog Brain to fresh runners deeper in the ranking.
+    try {
+      const rows=await this.mobula.trending();
+      if(rows.length){
+        const take=Math.min(config.mobulaActiveSlots,rows.length);
+        for(let i=0;i<take;i++) tryAdd(rows[(this.mobulaCursor+i)%rows.length]);
+        this.mobulaCursor=(this.mobulaCursor+take)%rows.length;
+      }
+    } catch(e){ log.warn(`[MOBULA DISCOVERY] ${e instanceof Error?e.message:String(e)}`); }
 
     // Optional direct/custom adapters remain supported if the user later obtains a supported feed.
     const external = await Promise.allSettled([getAxiomTrending(),getFomoTrending()]);
-    for(const r of external) if(r.status==="fulfilled") for(const t of r.value) this.add(t);
+    for(const r of external) if(r.status==="fulfilled") for(const t of r.value) tryAdd(t);
 
     // Birdeye Trending gets second priority behind the Axiom-style lane.
     const trendDue=now-this.lastBirdeyeTrending>=config.birdeyeTrendingIntervalMs;
-    if(trendDue){this.lastBirdeyeTrending=now; await this.birdeyeFeed("BIRDEYE TREND",true,()=>this.birdeye.trending());}
+    if(trendDue){this.lastBirdeyeTrending=now; await this.birdeyeFeed("BIRDEYE TREND",true,()=>this.birdeye.trending(),tryAdd);}
 
     // DEX Screener is the always-on, no-key fallback/enrichment discovery source.
     if(now-this.lastDexDiscovery>=config.dexDiscoveryIntervalMs){
       this.lastDexDiscovery=now;
-      try { for(const t of await this.dex.discover()) this.add(t); }
+      try { for(const t of await this.dex.discover()) tryAdd(t); }
       catch(e){ log.warn(`[DEX DISCOVERY] ${e instanceof Error?e.message:String(e)}`); }
     }
 
     // New listings remain a separate early-runner lane after trending capacity is reserved.
     const newDue=now-this.lastBirdeyeNew>=config.birdeyeNewIntervalMs;
-    if(newDue){this.lastBirdeyeNew=now; await this.birdeyeFeed("BIRDEYE NEW",true,()=>this.birdeye.newListings());}
+    if(newDue){this.lastBirdeyeNew=now; await this.birdeyeFeed("BIRDEYE NEW",true,()=>this.birdeye.newListings(),tryAdd);}
     if(config.birdeyeMemeIntervalMs>0){
       const memeDue=now-this.lastBirdeyeMeme>=config.birdeyeMemeIntervalMs;
-      if(memeDue){this.lastBirdeyeMeme=now; await this.birdeyeFeed("BIRDEYE MEME",true,()=>this.birdeye.memeMomentum());}
+      if(memeDue){this.lastBirdeyeMeme=now; await this.birdeyeFeed("BIRDEYE MEME",true,()=>this.birdeye.memeMomentum(),tryAdd);}
     }
     this.pruneKnown();
     const active=this.activeCount();
     const poolState=active<config.minActiveCandidates?"REFILLING":"HEALTHY";
     const trending=[...this.candidates.values()].filter(c=>!["DROPPED","BOUGHT","FAILED"].includes(c.state) && (["fomo","axiom","mobula-axiom-volume","mobula-axiom-price","birdeye-trending","dex-momentum","social-watchlist"] as const).some(x=>c.sources.has(x))).length;
     const early=Math.max(0,active-trending);
-    log.info(`[DISCOVERY] active=${active} 🔥trending=${trending} 🐣early=${early} target≥${config.minActiveCandidates} total-known=${this.candidates.size} pool:${poolState} | AXIOM-STYLE:${this.mobula.enabled()?"Mobula:on":"off"} DEX:on Birdeye:${this.birdeye.isCuAvailable()?"available":"CU cooldown"} | ${this.birdeye.budgetText()}`);
+    log.info(`[DISCOVERY] active=${active} 🔥trending=${trending} 🐣early=${early} | fresh-cycle=${freshThisCycle}/${config.freshCandidatesPerCycle} unique-today=${this.scannedToday.size} total-known=${this.candidates.size} pool:${poolState} | AXIOM-STYLE:${this.mobula.enabled()?"Mobula:on":"off"} DEX:on Birdeye:${this.birdeye.isCuAvailable()?"available":"CU cooldown"} | ${this.birdeye.budgetText()}`);
   }
   private rankText(c:Candidate){return Object.entries(c.trendingRanks).map(([k,v])=>{
     const move=(c.rankMovement as any)?.[k]??0;
@@ -145,6 +187,8 @@ export class Scanner {
 
   private async collect(c:Candidate,index:number) {
     if(c.collecting||["DROPPED","BOUGHT","FAILED"].includes(c.state))return;
+    this.resetDailyUnique();
+    this.scannedToday.add(c.token.address);
     c.collecting=true;
     try{
       const seed=c.token.seed??{};
