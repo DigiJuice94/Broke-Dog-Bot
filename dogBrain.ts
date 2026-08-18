@@ -51,16 +51,131 @@ class DogBrain {
   logReport(){if(!config.dogBrainEnabled)return;this.ensureLoaded();const done=this.state.records.filter(r=>r.resolved);const bought=done.filter(r=>r.decision==="BOUGHT"&&r.tradeExitPct!=null);const rejected=done.filter(r=>r.decision==="REJECTED");const wins=bought.filter(r=>(r.tradeExitPct??0)>0).length;const missed=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct).length;const avoided=rejected.filter(r=>r.minReturnPct<=-config.dogBrainRugPct).length;const all=[...FEATURES].map(f=>({f,w:Math.abs(this.state.weights.NORMAL[f])+Math.abs(this.state.weights.FLAME[f])})).sort((a,b)=>b.w-a.w);const top=all[0];log.info(`🧠🐶 DOG BRAIN DAILY | resolved:${done.length} | trades:${bought.length} | W:${wins} L:${Math.max(0,bought.length-wins)} WR:${bought.length?(wins/bought.length*100).toFixed(1):"0.0"}% | missed runners:${missed} | rejected dumps/rugs:${avoided} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | strongest learned:${top?.f??"none"} | rollbacks:${this.state.rollbacks}`);}
 
   reportSnapshot(mode:"PAPER"|"LIVE",sinceMs=3600000){
-    if(!config.dogBrainEnabled)return {enabled:false,observations:0,resolved:0,bought:0,rejected:0,missedRunners:0,avoidedDumps:0,wins:0,losses:0,strongest:"none",weakest:"none",recentLessons:[] as string[]};
+    const empty={enabled:false,observations:0,resolved:0,bought:0,rejected:0,missedRunners:0,avoidedDumps:0,wins:0,losses:0,strongest:"none",weakest:"none",strongestPositive:"none yet",strongestWarning:"none yet",recentLessons:[] as string[],learnedSummary:["Dog Brain is disabled."],improvements:["Enable DOG_BRAIN_ENABLED=true to collect learning data."]};
+    if(!config.dogBrainEnabled)return empty;
     this.ensureLoaded(); const now=Date.now();
     const matching=this.state.records.filter(r=>(r.mode??(config.liveTrading?"LIVE":"PAPER"))===mode);
     const recent=matching.filter(r=>now-r.decisionAt<=sinceMs); const resolved=recent.filter(r=>r.resolved);
     const bought=recent.filter(r=>r.decision==="BOUGHT"); const rejected=recent.filter(r=>r.decision==="REJECTED");
     const closed=bought.filter(r=>r.tradeExitPct!=null); const wins=closed.filter(r=>(r.tradeExitPct??0)>0).length;
     const missed=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct).length; const avoided=rejected.filter(r=>r.minReturnPct<=-config.dogBrainRugPct).length;
-    const weights=FEATURES.map(f=>({f,w:(this.state.weights.NORMAL[f]+this.state.weights.FLAME[f])/2})).sort((a,b)=>b.w-a.w);
+    const weights=FEATURES.map(f=>({f,w:(this.state.weights.NORMAL[f]+this.state.weights.FLAME[f])/2,abs:(Math.abs(this.state.weights.NORMAL[f])+Math.abs(this.state.weights.FLAME[f]))/2}));
+    const strongest=[...weights].sort((a,b)=>b.abs-a.abs)[0];
+    const positive=[...weights].filter(x=>x.w>0).sort((a,b)=>b.w-a.w)[0];
+    const warning=[...weights].filter(x=>x.w<0).sort((a,b)=>a.w-b.w)[0];
+    const labels:Record<FeatureName,string>={buyPressure:"buy pressure",volumeMomentum:"volume acceleration",priceMomentum:"price momentum",liquidity:"liquidity",earlyAge:"very early age",multiSource:"multi-source confirmation",socialHeat:"social/meta heat",routeQuality:"sell-route quality",bundleSafety:"bundle safety"};
     const lessons=recent.filter(r=>r.resolved).slice(-5).reverse().map(r=>`${r.name} ($${r.symbol}) ${r.decision}: max ${r.maxReturnPct>=0?"+":""}${r.maxReturnPct.toFixed(1)}%, min ${r.minReturnPct.toFixed(1)}%${r.tradeExitPct!=null?`, exit ${r.tradeExitPct>=0?"+":""}${r.tradeExitPct.toFixed(1)}%`:""}`);
-    return {enabled:true,observations:recent.length,resolved:resolved.length,bought:bought.length,rejected:rejected.length,missedRunners:missed,avoidedDumps:avoided,wins,losses:Math.max(0,closed.length-wins),strongest:weights[0]?.f??"none",weakest:weights.at(-1)?.f??"none",recentLessons:lessons};
+
+    const good=resolved.filter(r=>(r.tradeExitPct??r.maxReturnPct)>=10||r.maxReturnPct>=config.dogBrainRunnerPct);
+    const bad=resolved.filter(r=>(r.tradeExitPct??0)<0||r.minReturnPct<=-config.dogBrainRugPct);
+    const avg=(rows:LearningRecord[],f:FeatureName)=>rows.length?rows.reduce((a,r)=>a+Number(r.features?.[f]??0),0)/rows.length:0;
+    const diffs=FEATURES.map(f=>({f,d:avg(good,f)-avg(bad,f)})).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d));
+    const learnedSummary:string[]=[];
+    if(resolved.length<3){
+      learnedSummary.push(`Only ${resolved.length} resolved ${mode.toLowerCase()} samples in this report window — too early for a confident strategy change.`);
+      learnedSummary.push(`Current learned weights still favor ${positive?labels[positive.f]:"no signal yet"}${warning?` and distrust ${labels[warning.f]}`:""}.`);
+    }else{
+      const bestDiff=diffs.find(x=>x.d>0.08); const badDiff=diffs.find(x=>x.d<-0.08);
+      if(bestDiff)learnedSummary.push(`Better outcomes showed more ${labels[bestDiff.f]} than weaker outcomes.`);
+      if(badDiff)learnedSummary.push(`Poor outcomes showed more ${labels[badDiff.f]}; Dog Brain is treating it as a caution signal.`);
+      if(missed)learnedSummary.push(`${missed} rejected coin${missed===1?"":"s"} later met the runner threshold — rejection logic may be too strict for some early runners.`);
+      if(avoided)learnedSummary.push(`${avoided} rejected coin${avoided===1?"":"s"} later dumped/rugged — those rejections were useful safety wins.`);
+      if(closed.length)learnedSummary.push(`Bought-trade result in this window: ${wins}/${closed.length} profitable (${(wins/closed.length*100).toFixed(0)}% win rate).`);
+    }
+
+    const improvements:string[]=[];
+    if(resolved.length<config.dogBrainMinSamples)improvements.push(`Keep paper mode running until at least ${config.dogBrainMinSamples} resolved samples are collected before trusting weight changes.`);
+    if(missed>0)improvements.push(`Review missed runners before raising the global buy threshold; prefer a controlled FLAME exception when buy pressure + volume acceleration + route quality confirm.`);
+    if(avoided>missed&&avoided>0)improvements.push(`Do not loosen bundle/route safety broadly — current rejection logic is successfully avoiding more bad moves than runners.`);
+    if(closed.length>=3&&wins/closed.length<0.5)improvements.push(`Recent bought-trade win rate is below 50%; require stronger confirmation on the top positive predictor before entry and keep stops tight.`);
+    if(closed.length>=3&&wins/closed.length>=0.65)improvements.push(`Recent entries are working; avoid over-tightening. Focus improvements on exits and missed-runner capture instead of making all entries stricter.`);
+    if(positive)improvements.push(`Give slightly more attention to ${labels[positive.f]} — it currently has the strongest positive learned weight, within the existing Dog Brain guardrails.`);
+    if(warning)improvements.push(`Penalize setups where ${labels[warning.f]} is weak/negative; it currently carries the strongest negative learned weight.`);
+    if(!improvements.length)improvements.push("Keep collecting outcomes; there is not enough separation between winners, losers, and rejected runners to justify a strategy change yet.");
+
+    // Creator-facing recommendations: exact settings to TEST, never auto-applied.
+    const preciseRecommendations:string[]=[];
+    const moreDataNeeded:string[]=[];
+    const wr=closed.length?wins/closed.length:0;
+    const confidence=(n:number)=>n>=30?"HIGH":n>=12?"MEDIUM":"LOW";
+    const conf=confidence(resolved.length);
+    const profitable=closed.filter(r=>(r.tradeExitPct??0)>0);
+    const losing=closed.filter(r=>(r.tradeExitPct??0)<0);
+    const avgGiveback=profitable.length?profitable.reduce((a,r)=>a+Math.max(0,r.maxReturnPct-(r.tradeExitPct??0)),0)/profitable.length:0;
+    const lossRecovery=losing.length?losing.filter(r=>r.maxReturnPct>=10).length/losing.length:0;
+    const flameResolved=resolved.filter(r=>r.lane==="FLAME");
+    const normalResolved=resolved.filter(r=>r.lane==="NORMAL");
+
+    if(closed.length>=3&&wr<0.45){
+      const proposed=Math.min(95,config.buyScore+3);
+      preciseRecommendations.push(`ENTRY FILTER | Current BUY_SCORE=${config.buyScore} → TEST ${proposed} for NORMAL entries only. Evidence: ${wins}/${closed.length} closed ${mode.toLowerCase()} trades won (${(wr*100).toFixed(0)}%). Expected upside: fewer marginal entries. Risk: more missed runners. Confidence: ${confidence(closed.length)} (${closed.length} closed trades).`);
+    }else if(closed.length>=5&&wr>=0.65){
+      preciseRecommendations.push(`ENTRY FILTER | KEEP BUY_SCORE=${config.buyScore}. Evidence: ${wins}/${closed.length} closed trades won (${(wr*100).toFixed(0)}%). Do not make normal entries stricter until this falls below ~55% over a larger sample. Confidence: ${confidence(closed.length)}.`);
+    }
+
+    if(missed>=2){
+      const proposed=Math.max(config.buyScore,config.flameMinScore-2);
+      preciseRecommendations.push(`MISSED RUNNERS / FLAME | Current FLAME_MIN_SCORE=${config.flameMinScore} → TEST ${proposed} (down ${config.flameMinScore-proposed}) while KEEPING FLAME_MIN_CONFIDENCE=${config.flameMinConfidence}, MIN_SOURCES=${config.flameMinSources}, and sell-route safety. Evidence: ${missed} rejected coins later reached the +${config.dogBrainRunnerPct}% runner threshold. Expected upside: capture exceptional early runners without loosening NORMAL buys. Risk: more false-positive FLAME entries. Confidence: ${confidence(rejected.length)} (${rejected.length} rejected samples).`);
+    }
+
+    if(avoided>=2&&avoided>=missed){
+      preciseRecommendations.push(`SAFETY | DO NOT lower route/bundle safety yet. Evidence: ${avoided} rejected coins later hit the dump/rug threshold versus ${missed} missed runners. Expected upside: preserve current rug avoidance. Risk of changing it now: converting correct rejections into losses. Confidence: ${confidence(rejected.length)}.`);
+    }
+
+    if(positive?.f==="buyPressure"&&closed.length>=3&&wr<0.55){
+      const proposed=(config.flameMinBuySellRatio+0.5).toFixed(1);
+      preciseRecommendations.push(`BUY PRESSURE | Current FLAME_MIN_BUY_SELL_RATIO=${config.flameMinBuySellRatio} → TEST ${proposed}. Evidence: buy pressure is Dog Brain's strongest positive predictor (${positive.w>=0?"+":""}${positive.w.toFixed(2)}) while bought-trade win rate is ${(wr*100).toFixed(0)}%. Expected upside: avoid weak momentum entries. Risk: later entries / fewer trades. Confidence: ${conf}.`);
+    }
+
+    if(avgGiveback>=12&&profitable.length>=3){
+      const proposed=Math.max(4,config.trailingStopPct-2);
+      preciseRecommendations.push(`PROFIT PROTECTION | Current TRAILING_STOP_PCT=${config.trailingStopPct}% → TEST ${proposed}% after the existing PROFIT_PROTECT_ARM_PCT=${config.profitProtectArmPct}%. Evidence: profitable trades gave back an average ${avgGiveback.toFixed(1)} percentage points from observed peak to exit. Expected upside: retain more runner profit. Risk: tighter trails can exit normal volatility early. Confidence: ${confidence(profitable.length)} (${profitable.length} winners).`);
+    }
+
+    if(lossRecovery>=0.5&&losing.length>=4){
+      const proposed=Math.min(12,config.softStopLossPct+1);
+      preciseRecommendations.push(`SOFT STOP REVIEW | Current SOFT_STOP_LOSS_PCT=${config.softStopLossPct}% → TEST ${proposed}% ONLY in paper mode with momentum confirmation. Evidence: ${(lossRecovery*100).toFixed(0)}% of ${losing.length} losing exits later recovered to at least +10% in tracked outcomes. Expected upside: fewer premature panic exits. Risk: larger losses when recovery never arrives; HARD_STOP_LOSS_PCT=${config.hardStopLossPct}% stays unchanged. Confidence: ${confidence(losing.length)}.`);
+    }
+
+    if(preciseRecommendations.length===0){
+      preciseRecommendations.push(`NO PARAMETER CHANGE YET | Keep BUY_SCORE=${config.buyScore}, FLAME_MIN_SCORE=${config.flameMinScore}, HARD_STOP_LOSS_PCT=${config.hardStopLossPct}%, and TRAILING_STOP_PCT=${config.trailingStopPct}% unchanged. Evidence is not strong enough in this window. Confidence: ${conf} (${resolved.length} resolved samples).`);
+    }
+
+    if(resolved.length<config.dogBrainMinSamples)moreDataNeeded.push(`GENERAL SIGNAL QUALITY | Need ${Math.max(0,config.dogBrainMinSamples-resolved.length)} more resolved ${mode.toLowerCase()} observations to reach the minimum ${config.dogBrainMinSamples}-sample learning threshold.`);
+    if(flameResolved.length<10)moreDataNeeded.push(`FLAME QUALITY | Need ${10-flameResolved.length} more resolved FLAME setups. Question: does lowering FLAME_MIN_SCORE capture runners without materially increasing rugs/losses?`);
+    if(normalResolved.length<20)moreDataNeeded.push(`NORMAL ENTRY QUALITY | Need ${20-normalResolved.length} more resolved NORMAL setups to compare winners vs losers without FLAME noise.`);
+    if(profitable.length<10)moreDataNeeded.push(`EXIT / PROFIT GIVEBACK | Need ${10-profitable.length} more profitable closed trades with peak-vs-exit tracking. Question: should TRAILING_STOP_PCT or TAKE_PROFIT_PCT change?`);
+    if(losing.length<10)moreDataNeeded.push(`STOP-LOSS RECOVERY | Need ${10-losing.length} more losing/stop exits with 15m/30m/1h counterfactual outcomes. Question: are stops saving capital or cutting recoveries too early?`);
+    if(missed<5)moreDataNeeded.push(`MISSED RUNNERS | Need ${5-missed} more confirmed missed-runner examples before making a larger FLAME threshold change. Track exactly which rejection rule blocked each runner.`);
+    moreDataNeeded.push(`POSITION SIZING | Keep sizing unchanged until there are at least 30 closed trades per lane. Then compare expectancy, drawdown, and loss streaks before changing PAPER_NORMAL_MAX_USD=$${config.paperNormalMaxUsd}, PAPER_ELITE_MAX_USD=$${config.paperEliteMaxUsd}, or PAPER_FLAME_MAX_USD=$${config.paperFlameMaxUsd}.`);
+
+    // System-level self critique: what Dog Brain wants the creator to improve about the bot itself.
+    const selfImprovementRequests:string[]=[];
+    const avgRoute=Math.round((resolved.length?resolved.reduce((a,r)=>a+r.features.routeQuality,0)/resolved.length:0)*100);
+    const avgMulti=Math.round((resolved.length?resolved.reduce((a,r)=>a+r.features.multiSource,0)/resolved.length:0)*100);
+    const avgBundle=Math.round((resolved.length?resolved.reduce((a,r)=>a+r.features.bundleSafety,0)/resolved.length:0)*100);
+    const weakRoute=resolved.filter(r=>r.features.routeQuality<=0).length;
+    const singleSourceish=resolved.filter(r=>r.features.multiSource<=0).length;
+    const unknownBundle=resolved.filter(r=>Math.abs(r.features.bundleSafety)<0.05).length;
+
+    if(weakRoute>=Math.max(3,Math.ceil(resolved.length*0.25))){
+      selfImprovementRequests.push(`🔴 HIGH — SELL-ROUTE / EXECUTION INTELLIGENCE | Evidence: ${weakRoute}/${resolved.length} resolved samples had neutral-or-weak route-quality data (avg normalized route signal ${avgRoute}). What I want added: persist Jupiter route depth, price impact, quote age, retry count, and simulated sell output at entry + each outcome checkpoint. Why: I need to separate bad coin selection from trades that only look good on chart but are hard to exit. Expected benefit: fewer false winners and better live-readiness decisions. Confidence: ${conf}.`);
+    }
+    if(unknownBundle>=Math.max(3,Math.ceil(resolved.length*0.20))){
+      selfImprovementRequests.push(`🔴 HIGH — BUNDLE/HOLDER DATA COVERAGE | Evidence: ${unknownBundle}/${resolved.length} resolved samples had no strong bundle-safety signal (avg normalized bundle signal ${avgBundle}). What I want added: record which safety fields were missing, source latency, holder concentration, linked-wallet/bundle confidence, and whether safety completed before decision time. Why: I cannot learn whether bundle risk predicts losses if unknown and truly-safe look identical. Expected benefit: cleaner safety learning and fewer avoidable rugs. Confidence: ${conf}.`);
+    }
+    if(singleSourceish>=Math.max(3,Math.ceil(resolved.length*0.35))){
+      selfImprovementRequests.push(`🟠 MEDIUM-HIGH — DISCOVERY SOURCE ATTRIBUTION | Evidence: ${singleSourceish}/${resolved.length} resolved samples had little/no multi-source confirmation (avg normalized multi-source signal ${avgMulti}). What I want added: permanently store every discovery source that found each mint, first-seen timestamp per source, and source-specific outcome stats (wins, losses, rugs, missed runners, entry lateness). Why: I want to tell you which scanner is actually finding profitable coins earliest. Expected benefit: prioritize productive scanners and de-emphasize noisy ones. Confidence: ${conf}.`);
+    }
+    if(profitable.length>=2){
+      selfImprovementRequests.push(`🟠 MEDIUM-HIGH — EXIT COUNTERFACTUAL ENGINE | Evidence: ${profitable.length} profitable closed trades are available and observed average peak-to-exit giveback is ${avgGiveback.toFixed(1)} points. What I want added: for every closed trade, simulate fixed TP, trailing-stop, partial-profit, moon-bag, and momentum-collapse exits at the same timestamps. Why: I need to prove whether the entry was good but the exit left money behind. Expected benefit: improve expectancy without simply increasing entry strictness. Confidence: ${confidence(profitable.length)}.`);
+    }else{
+      selfImprovementRequests.push(`🟡 MEDIUM — EXIT COUNTERFACTUAL ENGINE | Evidence: only ${profitable.length} profitable closed trade${profitable.length===1?"":"s"} in this window. What I want added now: capture peak P&L, drawdown from peak, momentum at exit, and alternate-exit outcomes for every trade so I have enough evidence later. Expected benefit: identify whether exits, not entries, are the bigger leak. Confidence: LOW until more winners close.`);
+    }
+    selfImprovementRequests.push(`🟠 MEDIUM-HIGH — ENTRY-TIMING HISTORY | What I want added: save candidate age, first discovery time, first score >= threshold time, actual entry time, and 1m/5m momentum snapshots before entry. Why: I want to measure how many losses are late chases versus genuinely bad setups. Expected benefit: precise entry-delay/observation recommendations instead of guessing from final score. Evidence trigger: ${Math.max(0,closed.length-wins)} losing bought trades and ${missed} missed runner${missed===1?"":"s"} in this report window. Confidence: ${confidence(closed.length+missed)}.`);
+    selfImprovementRequests.push(`🟡 MEDIUM — LEARNING DATA DURABILITY / AUDIT | What I want added: a compact persistent per-trade audit row containing decision inputs, missing fields, source timestamps, entry/exit snapshots, and all counterfactual outcomes. Why: every future creator recommendation should be reproducible after redeploys and not depend on transient logs. Expected benefit: stronger long-run learning and easier debugging. Priority increases before live mode.`);
+
+    return {enabled:true,observations:recent.length,resolved:resolved.length,bought:bought.length,rejected:rejected.length,missedRunners:missed,avoidedDumps:avoided,wins,losses:Math.max(0,closed.length-wins),strongest:strongest?labels[strongest.f]:"none",weakest:warning?labels[warning.f]:"none",strongestPositive:positive?`${labels[positive.f]} (${positive.w>=0?"+":""}${positive.w.toFixed(2)})`:"none yet",strongestWarning:warning?`${labels[warning.f]} (${warning.w.toFixed(2)})`:"none yet",recentLessons:lessons,learnedSummary,improvements,preciseRecommendations,moreDataNeeded,selfImprovementRequests,recommendationConfidence:conf,resolvedSampleSize:resolved.length};
   }
   startupText(){this.ensureLoaded();return `Dog Brain v1 ${config.dogBrainEnabled?`ON (always learning: ${config.liveTrading?"LIVE":"PAPER"})`:"OFF"} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | file ${config.dogBrainFile}`;}
 }

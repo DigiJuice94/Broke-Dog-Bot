@@ -364,7 +364,16 @@ export class Trader {
       const openValueUsd=openPositions.reduce((a,p)=>a+p.entryUsd*(p.currentPriceUsd/p.entryPriceUsd)*(1-this.paperCostsPct()/100),0);
       const equityUsd=this.paperCashUsd+openValueUsd,totalPnlUsd=equityUsd-config.paperStartBalanceUsd,totalReturnPct=config.paperStartBalanceUsd?totalPnlUsd/config.paperStartBalanceUsd*100:0;
       const unrealizedUsd=openValueUsd-pos.reduce((a,p)=>a+p.entryUsd,0);
-      return {mode,equityUsd,cashUsd:this.paperCashUsd,openValueUsd,totalPnlUsd,totalReturnPct,realizedUsd:this.paperRealizedUsd,unrealizedUsd,wins,losses,buys,sells,closedTrades,openPositions};
+      const lifetimeClosed=this.paperWins+this.paperLosses;
+      const lifetimeWinRatePct=lifetimeClosed?this.paperWins/lifetimeClosed*100:0;
+      return {
+        mode,equityUsd,cashUsd:this.paperCashUsd,openValueUsd,totalPnlUsd,totalReturnPct,
+        realizedUsd:this.paperRealizedUsd,unrealizedUsd,todayPnlUsd:this.paperDayRealizedUsd,
+        lifetimeWins:this.paperWins,lifetimeLosses:this.paperLosses,lifetimeClosed,lifetimeWinRatePct,
+        bestTradePct:Number.isFinite(this.paperBestPct)?this.paperBestPct:null,
+        worstTradePct:Number.isFinite(this.paperWorstPct)?this.paperWorstPct:null,
+        wins,losses,buys,sells,closedTrades,openPositions
+      };
     }
     const recentClosed=this.closedTracks.filter(x=>now-x.closedAt<=sinceMs);
     const buys=openPositions.filter(p=>now-p.openedAt<=sinceMs).map(p=>({type:"BUY",...p}));

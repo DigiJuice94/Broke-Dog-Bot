@@ -1,3 +1,13 @@
+# Broke Dog Bot v1.8.0 — Dog Brain Self-Critique Email
+
+**v1.8.0 changes:**
+- Adds a dedicated **🛠️🐶 WHAT I WANT MY CREATOR TO IMPROVE ABOUT ME** section to hourly and daily email reports.
+- Dog Brain now critiques system-level weaknesses separately from strategy settings: discovery/source attribution, bundle/holder coverage, sell-route intelligence, entry-timing history, exit counterfactual analysis, and durable learning/audit data.
+- Each self-improvement request includes evidence, exact feature/code/data improvement requested, expected benefit, priority, and confidence.
+- Keeps precise strategy recommendations, more-data requests, dual PAPER/LIVE wallet sections, and suggested tweet.
+- Recommendations remain advisory only; no automatic code/strategy rewrites.
+- Keeps v1.7.1 quiet safety logs.
+
 # Broke Dog Bot v1.4.2 — DEX Rate-Limit + $1,000 Paper Bankroll
 
 **v1.4.2 changes:**
@@ -164,3 +174,18 @@ The bot sends distinct `PAPER DOG REPORT` and `LIVE DOG REPORT` emails. Paper re
 Dog Brain records created by v1.5.0 are tagged `PAPER` or `LIVE`. Older records remain readable and are assigned to the mode of the process that loads them for backward compatibility.
 
 Resend's default `onboarding@resend.dev` sender is intended for testing. For broader production delivery, configure a verified sender/domain in Resend and set `REPORT_FROM` accordingly.
+
+
+## v1.7.1 — Dual-wallet email + Dog Brain insights
+
+Hourly and daily email reporting now sends one combined report with two clearly isolated sections: PAPER WALLET and LIVE WALLET. Paper P&L/trades never count toward live P&L/trades, and live history never counts toward paper results.
+
+Dog Brain reporting now explains what it has learned from the current report window and produces guarded improvement ideas based on resolved samples, missed runners, avoided dumps/rugs, learned feature weights, and recent win rate. These are advisory only; Dog Brain's existing bounded-weight/rollback safety controls remain unchanged.
+
+
+## v1.7.1 Email Paper Wallet Performance
+Hourly and daily email reports now include the same full PAPER WALLET performance block shown in Railway logs: starting balance, equity, cash, open value, total P&L/return, realized/unrealized/today P&L, lifetime wins/losses/win rate, best trade, and worst trade. Last-hour trade counts remain separate below the lifetime stats.
+
+
+## v1.7.1 Creator Intelligence Email
+Hourly/daily email now includes exact creator-facing parameter tests with current/proposed values, evidence, upside/risk, confidence and sample size; a What Dog Brain Wants More Data On section; and a <=280-character suggested tweet at the very bottom. Suggested changes are advisory only and are never auto-applied. Tweets are draft-only and never auto-posted.
