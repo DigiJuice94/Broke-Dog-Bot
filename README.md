@@ -107,6 +107,16 @@ npm start
 ```
 
 
+## v1.9.2 — Dog Brain Persistent Memory Guard
+
+This update prevents Dog Brain learning from depending on Railway's disposable deployment filesystem. If a Railway Volume is mounted, the bot automatically uses `RAILWAY_VOLUME_MOUNT_PATH` (or `DOG_BRAIN_DATA_DIR` if set) for Dog Brain memory, trading state, and the paper ledger.
+
+Dog Brain writes JSON atomically and keeps two rolling backup copies (`.bak1` and `.bak2`). On startup it can recover from a backup if the primary JSON is damaged. It also attempts a one-time migration from legacy local files when those files are still visible. Startup logs now print `MEMORY RESTORED`, NORMAL/FLAME sample counts, record count, and whether storage is `PERSISTENT` or `LOCAL/EPHEMERAL`.
+
+**Railway setup:** add a persistent Volume to the service (recommended mount path `/data`). No strategy setting changes are required. Once the startup log says `PERSISTENT (/data)` and shows the expected sample/record counts, future code redeploys can reuse the same learning files. The bot cannot recover a legacy ephemeral file after Railway has already destroyed that old deployment, so make the first migration before intentionally deleting/resetting the service.
+
+Paper sizing defaults in this build are also updated to NORMAL $75 / ELITE $85 / FLAME $100. Railway environment variables still override these defaults.
+
 ## v1.1 Paper Wallet Tracker
 
 When `LIVE_TRADING=false`, the bot now uses a dedicated simulated cash wallet instead of the real SOL balance for position sizing. Set `PAPER_START_BALANCE_USD` to choose the starting bankroll.
@@ -200,3 +210,7 @@ Hourly and daily email reports now include the same full PAPER WALLET performanc
 
 ## v1.7.1 Creator Intelligence Email
 Hourly/daily email now includes exact creator-facing parameter tests with current/proposed values, evidence, upside/risk, confidence and sample size; a What Dog Brain Wants More Data On section; and a <=280-character suggested tweet at the very bottom. Suggested changes are advisory only and are never auto-applied. Tweets are draft-only and never auto-posted.
+
+
+## v1.9.2 Quiet rate-limit retries
+Routine provider `429` retry/backoff messages are silent by default so Railway logs are not flooded. Retries still happen exactly as before. Set `RATE_LIMIT_VERBOSE=true` temporarily if you need to debug throttling. Final request failures are not converted into successes or ignored by this change.

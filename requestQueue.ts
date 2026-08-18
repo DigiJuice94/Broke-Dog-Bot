@@ -1,5 +1,3 @@
-import { log } from "./log.ts";
-
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class RequestQueue {
@@ -29,7 +27,11 @@ export class RequestQueue {
           attempt += 1;
           const backoff = Math.min(8_000, 1_000 * (2 ** attempt)) + Math.floor(Math.random() * 350);
           this.backoffUntil = Date.now() + backoff;
-          log.warn(`[RATE] ${this.name} 429 — backing off ${backoff}ms (retry ${attempt}/${this.maxRetries})`);
+          // Retry/backoff chatter is intentionally silent by default to keep Railway logs readable.
+          // Set RATE_LIMIT_VERBOSE=true only when actively debugging provider throttling.
+          if (String(process.env.RATE_LIMIT_VERBOSE ?? "false").toLowerCase() === "true") {
+            console.warn(`${new Date().toISOString()} [RATE] ${this.name} 429 — backing off ${backoff}ms (retry ${attempt}/${this.maxRetries})`);
+          }
           await sleep(backoff);
           this.lastStart = Date.now();
         }

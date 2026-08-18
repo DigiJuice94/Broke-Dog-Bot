@@ -8,7 +8,7 @@ import { Notifier } from "./notifier.ts";
 import { DexScreener } from "./dexscreener.ts";
 import { SolPriceService } from "./solPrice.ts";
 import { socialPerformance } from "./socialPerformance.ts";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { migrateLegacyFile, readJsonRecovered, writeJsonAtomic } from "./persistence.ts";
 import { dogBrain } from "./dogBrain.ts";
 
 type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;exitPnlPct:number;peakPnlPct:number;peakGivebackPct:number;closedAt:number;logged:Set<number>;socialAccounts:string[]};
@@ -59,13 +59,14 @@ export class Trader {
         paper:{baseBalanceUsd:config.paperStartBalanceUsd,cashUsd:this.paperCashUsd,realizedUsd:this.paperRealizedUsd,wins:this.paperWins,losses:this.paperLosses,bestPct:Number.isFinite(this.paperBestPct)?this.paperBestPct:null,worstPct:Number.isFinite(this.paperWorstPct)?this.paperWorstPct:null,tradeCount:this.paperTradeCount,dayRealizedUsd:this.paperDayRealizedUsd,day:this.paperDay},
         positions:[...this.positions.values()].map(p=>({...p,tokenAmountRaw:p.tokenAmountRaw.toString(),entrySolLamports:p.entrySolLamports.toString()}))
       };
-      writeFileSync(config.stateFile,JSON.stringify(data,null,2));
+      writeJsonAtomic(config.stateFile,data);
     } catch(e){ log.warn(`[STATE] save failed: ${e instanceof Error?e.message:String(e)}`); }
   }
   private loadState(){
-    if(!existsSync(config.stateFile))return;
+    migrateLegacyFile(config.stateFile,"broke-dog-hybrid-state.json");
     try {
-      const raw=JSON.parse(readFileSync(config.stateFile,"utf8"));
+      const raw=readJsonRecovered<any>(config.stateFile);
+      if(!raw)return;
       this.pnlDay=raw.day??this.pnlDay; this.realizedToday=Number(raw.realizedToday??0);
       if(raw.paper){
         this.paperCashUsd=Number(raw.paper.cashUsd??config.paperStartBalanceUsd);
@@ -77,7 +78,7 @@ export class Trader {
           this.paperCashUsd=Math.max(0,this.paperCashUsd+fundingDelta);
           raw.paper.baseBalanceUsd=config.paperStartBalanceUsd;
           raw.paper.cashUsd=this.paperCashUsd;
-          try{writeFileSync(config.stateFile,JSON.stringify(raw,null,2));}catch{}
+          try{writeJsonAtomic(config.stateFile,raw);}catch{}
           log.info(`💵🐶 PAPER BANKROLL UPDATED | base $${savedBase.toFixed(2)} → $${config.paperStartBalanceUsd.toFixed(2)} | cash adjusted ${fundingDelta>=0?"+":""}$${fundingDelta.toFixed(2)} | existing P&L/positions preserved`);
         }
         this.paperRealizedUsd=Number(raw.paper.realizedUsd??0);
@@ -114,7 +115,7 @@ export class Trader {
   }
   private positionsArrayPaperCost(){ let total=0; for(const p of this.positions.values())if(p.paper)total+=p.entryUsd; return total; }
   private appendPaperLedger(entry:any){
-    try{ let ledger:any[]=[]; if(existsSync(config.paperLedgerFile))ledger=JSON.parse(readFileSync(config.paperLedgerFile,"utf8")); if(!Array.isArray(ledger))ledger=[]; ledger.push(entry); writeFileSync(config.paperLedgerFile,JSON.stringify(ledger,null,2)); }
+    try{ migrateLegacyFile(config.paperLedgerFile,"broke-dog-paper-ledger.json"); let ledger:any[]=readJsonRecovered<any[]>(config.paperLedgerFile)??[]; if(!Array.isArray(ledger))ledger=[]; ledger.push(entry); writeJsonAtomic(config.paperLedgerFile,ledger); }
     catch(e){ log.warn(`[PAPER LEDGER] save failed: ${e instanceof Error?e.message:String(e)}`); }
   }
   async initialize(){ this.loadState(); await this.reconcileWallet(true); if(!config.liveTrading)this.logPaperWallet(undefined,true); }
@@ -360,7 +361,7 @@ export class Trader {
     if(pos.length){try{const m=await this.dex.batch(pos.map(p=>p.mint));priceMap=new Map([...m].map(([k,v]:any)=>[k,Number(v?.priceUsd??0)]));}catch{}}
     const openPositions=pos.map(p=>{const px=priceMap.get(p.mint)||p.entryPriceUsd; const pnl=(px/p.entryPriceUsd-1)*100;return {mint:p.mint,name:p.name,symbol:p.symbol,entryUsd:p.entryUsd,entryPriceUsd:p.entryPriceUsd,currentPriceUsd:px,pnlPct:pnl,lane:p.lane??"NORMAL",openedAt:p.openedAt};});
     if(mode==="PAPER"){
-      let ledger:any[]=[];try{if(existsSync(config.paperLedgerFile)){const x=JSON.parse(readFileSync(config.paperLedgerFile,"utf8"));if(Array.isArray(x))ledger=x;}}catch{}
+      let ledger:any[]=[];try{migrateLegacyFile(config.paperLedgerFile,"broke-dog-paper-ledger.json");const x=readJsonRecovered<any[]>(config.paperLedgerFile);if(Array.isArray(x))ledger=x;}catch{}
       const recent=ledger.filter(x=>{const t=Date.parse(x.at??"");return Number.isFinite(t)&&now-t<=sinceMs;});
       const buys=recent.filter(x=>x.type==="BUY"); const sells=recent.filter(x=>x.type==="SELL");
       const closedTrades=sells.map(x=>({name:x.name??"?",symbol:x.symbol??"?",pnlPct:Number(x.pnlPct??0),pnlUsd:Number(x.pnlUsd??0),reason:x.reason??"paper exit",at:x.at}));

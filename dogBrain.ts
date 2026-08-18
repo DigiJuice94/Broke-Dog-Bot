@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { migrateLegacyFile, persistenceMode, readJsonRecovered, writeJsonAtomic } from "./persistence.ts";
 import { config } from "./config.ts";
 import { Candidate, EntryLane, Position } from "./types.ts";
 import { DexScreener } from "./dexscreener.ts";
@@ -29,8 +29,8 @@ class DogBrain {
   private busy=false;
 
   private blank():BrainState{return {version:1,day:day(),weights:{NORMAL:zeroWeights(),FLAME:zeroWeights()},dailyMovement:{NORMAL:zeroWeights(),FLAME:zeroWeights()},samples:{NORMAL:0,FLAME:0},records:[],lastReportAt:0,lastLearnAt:0,rollbacks:0};}
-  private ensureLoaded(){if(this.loaded)return;this.loaded=true;try{if(existsSync(config.dogBrainFile)){const x=JSON.parse(readFileSync(config.dogBrainFile,"utf8"));this.state={...this.blank(),...x,weights:{NORMAL:{...zeroWeights(),...(x.weights?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.weights?.FLAME??{})}},dailyMovement:{NORMAL:{...zeroWeights(),...(x.dailyMovement?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.dailyMovement?.FLAME??{})}}};}}catch(e){log.warn(`[🧠 DOG BRAIN] state load failed: ${e instanceof Error?e.message:String(e)}`);}this.resetDay();}
-  private save(){try{writeFileSync(config.dogBrainFile,JSON.stringify(this.state,null,2));}catch(e){log.warn(`[🧠 DOG BRAIN] state save failed: ${e instanceof Error?e.message:String(e)}`);}}
+  private ensureLoaded(){if(this.loaded)return;this.loaded=true;try{const migrated=migrateLegacyFile(config.dogBrainFile,"broke-dog-brain-v1.json");if(migrated)log.info(`[🧠 DOG BRAIN] migrated legacy memory -> ${config.dogBrainFile}`);const x=readJsonRecovered<any>(config.dogBrainFile);if(x){this.state={...this.blank(),...x,weights:{NORMAL:{...zeroWeights(),...(x.weights?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.weights?.FLAME??{})}},dailyMovement:{NORMAL:{...zeroWeights(),...(x.dailyMovement?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.dailyMovement?.FLAME??{})}}};log.info(`[🧠 DOG BRAIN] MEMORY RESTORED | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | records:${this.state.records.length} | ${persistenceMode()}`);}else log.warn(`[🧠 DOG BRAIN] no prior memory found | starting fresh | ${persistenceMode()}`);}catch(e){log.warn(`[🧠 DOG BRAIN] state load failed: ${e instanceof Error?e.message:String(e)}`);}this.resetDay();}
+  private save(){try{writeJsonAtomic(config.dogBrainFile,this.state);}catch(e){log.warn(`[🧠 DOG BRAIN] state save failed: ${e instanceof Error?e.message:String(e)}`);}}
   private resetDay(){const d=day();if(this.state.day!==d){this.state.day=d;this.state.dailyMovement={NORMAL:zeroWeights(),FLAME:zeroWeights()};this.save();}}
   private lane(c:Candidate):LaneProfile{const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;return c.entryLane==="FLAME"||(age<=config.flameMaxAgeMin&&(c.runnerScore??0)>=75)?"FLAME":"NORMAL";}
   private vector(c:Candidate):FeatureVector{const s=c.snapshots.at(-1);const prev=c.snapshots.length>1?c.snapshots.at(-2):undefined;const buys=Number(s?.buys1m??s?.buys5m??0),sells=Number(s?.sells1m??s?.sells5m??0),ratio=buys/Math.max(1,sells);const vol=Number(s?.volume1mUsd??((s?.volume5mUsd??0)/5));const prevVol=Number(prev?.volume1mUsd??((prev?.volume5mUsd??0)/5));const volAccel=prevVol>0?(vol/prevVol-1):0;const p=Number(s?.priceChange1mPct??s?.priceChange5mPct??0);const liq=Number(s?.liquidityUsd??0);const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;const risk=s?.onChainRisk;const bundle=risk?.bundleRisk==="low"?1:risk?.bundleRisk==="medium"?-0.35:risk?.bundleRisk==="high"?-1:0;return {
@@ -179,6 +179,6 @@ class DogBrain {
 
     return {enabled:true,observations:recent.length,resolved:resolved.length,bought:bought.length,rejected:rejected.length,missedRunners:missed,avoidedDumps:avoided,wins,losses:Math.max(0,closed.length-wins),strongest:strongest?labels[strongest.f]:"none",weakest:warning?labels[warning.f]:"none",strongestPositive:positive?`${labels[positive.f]} (${positive.w>=0?"+":""}${positive.w.toFixed(2)})`:"none yet",strongestWarning:warning?`${labels[warning.f]} (${warning.w.toFixed(2)})`:"none yet",recentLessons:lessons,learnedSummary,improvements,preciseRecommendations,moreDataNeeded,selfImprovementRequests,recommendationConfidence:conf,resolvedSampleSize:resolved.length};
   }
-  startupText(){this.ensureLoaded();return `Dog Brain v1 ${config.dogBrainEnabled?`ON (always learning: ${config.liveTrading?"LIVE":"PAPER"})`:"OFF"} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | file ${config.dogBrainFile}`;}
+  startupText(){this.ensureLoaded();return `Dog Brain v1 ${config.dogBrainEnabled?`ON (always learning: ${config.liveTrading?"LIVE":"PAPER"})`:"OFF"} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | records ${this.state.records.length} | ${persistenceMode()} | file ${config.dogBrainFile}`;}
 }
 export const dogBrain=new DogBrain();
