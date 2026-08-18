@@ -11,7 +11,7 @@ import { socialPerformance } from "./socialPerformance.ts";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dogBrain } from "./dogBrain.ts";
 
-type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;exitPnlPct:number;closedAt:number;logged:Set<number>;socialAccounts:string[]};
+type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;exitPnlPct:number;peakPnlPct:number;peakGivebackPct:number;closedAt:number;logged:Set<number>;socialAccounts:string[]};
 
 type ExecutableExit = {
   amountRaw: bigint;
@@ -239,14 +239,17 @@ export class Trader {
 
   private rememberExit(p:Position, price:number, pnlPct:number){
     this.resetDailyIfNeeded(); const realizedUsd=p.entryUsd*(pnlPct/100); if(!p.paper)this.realizedToday+=realizedUsd; this.saveState();
-    this.closedTracks.push({mint:p.mint,name:p.name,symbol:p.symbol,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,exitPnlPct:pnlPct,closedAt:Date.now(),logged:new Set(),socialAccounts:p.socialAccountsAtBuy??[]});
+    const chartPeak=((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100;
+    const peakPnlPct=(!p.paper&&p.highExecutablePnlPct!=null)?p.highExecutablePnlPct:chartPeak;
+    const peakGivebackPct=peakPnlPct>0?Math.max(0,(peakPnlPct-pnlPct)/peakPnlPct*100):0;
+    this.closedTracks.push({mint:p.mint,name:p.name,symbol:p.symbol,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,exitPnlPct:pnlPct,peakPnlPct,peakGivebackPct,closedAt:Date.now(),logged:new Set(),socialAccounts:p.socialAccountsAtBuy??[]});
     this.closedTracks=this.closedTracks.filter(x=>Date.now()-x.closedAt<=65*60000);
   }
 
   private async trackClosedTrades(){
-    if(!this.closedTracks.length)return; const due=this.closedTracks.filter(x=>[5,15,30,60].some(m=>Date.now()-x.closedAt>=m*60000&&!x.logged.has(m))); if(!due.length)return;
+    if(!this.closedTracks.length)return; const checkpoints=[1,5,15,30,60]; const due=this.closedTracks.filter(x=>checkpoints.some(m=>Date.now()-x.closedAt>=m*60000&&!x.logged.has(m))); if(!due.length)return;
     const market=await this.dex.batch([...new Set(due.map(x=>x.mint))]);
-    for(const x of due){const price=market.get(x.mint)?.priceUsd;if(!price)continue;for(const m of [5,15,30,60]){if(Date.now()-x.closedAt>=m*60000&&!x.logged.has(m)){x.logged.add(m);const fromEntry=((price-x.entryPriceUsd)/x.entryPriceUsd)*100;const afterExit=((price-x.exitPriceUsd)/x.exitPriceUsd)*100;const cls=x.exitPnlPct<0&&afterExit>20?"EARLY EXIT":x.exitPnlPct<0&&afterExit<0?"GOOD STOP":"FOLLOW-UP";if([15,30,60].includes(m)&&x.socialAccounts.length)socialPerformance.record(x.socialAccounts,fromEntry);log.info(`[EXIT REVIEW ${m}m] ${x.name} ($${x.symbol}) | exit P/L ${x.exitPnlPct>=0?"+":""}${x.exitPnlPct.toFixed(1)}% | now vs entry ${fromEntry>=0?"+":""}${fromEntry.toFixed(1)}% | since exit ${afterExit>=0?"+":""}${afterExit.toFixed(1)}% | ${cls}${x.socialAccounts.length?` | Social:${x.socialAccounts.join(",")}`:""}`);}}}
+    for(const x of due){const price=market.get(x.mint)?.priceUsd;if(!price)continue;for(const m of checkpoints){if(Date.now()-x.closedAt>=m*60000&&!x.logged.has(m)){x.logged.add(m);const fromEntry=((price-x.entryPriceUsd)/x.entryPriceUsd)*100;const afterExit=((price-x.exitPriceUsd)/x.exitPriceUsd)*100;const cls=x.exitPnlPct<0&&afterExit>20?"EARLY EXIT":x.exitPnlPct<0&&afterExit<0?"GOOD STOP":"FOLLOW-UP";dogBrain.recordExitOutcome(x.mint,m,price,fromEntry,afterExit);if([15,30,60].includes(m)&&x.socialAccounts.length)socialPerformance.record(x.socialAccounts,fromEntry);log.info(`[EXIT REVIEW ${m}m] ${x.name} ($${x.symbol}) | exit P/L ${x.exitPnlPct>=0?"+":""}${x.exitPnlPct.toFixed(1)}% | peak ${x.peakPnlPct>=0?"+":""}${x.peakPnlPct.toFixed(1)}% | gave back ${x.peakGivebackPct.toFixed(0)}% of peak | now vs entry ${fromEntry>=0?"+":""}${fromEntry.toFixed(1)}% | since exit ${afterExit>=0?"+":""}${afterExit.toFixed(1)}% | ${cls}${x.socialAccounts.length?` | Social:${x.socialAccounts.join(",")}`:""}`);}}}
   }
 
   private async sell(p: Position, reason: string, currentPrice?: number, expected?: ExecutableExit | null) {
@@ -266,7 +269,7 @@ export class Trader {
         if(pnlUsd>=0)this.paperWins++; else this.paperLosses++;
         this.paperBestPct=Math.max(this.paperBestPct,pnlPct); this.paperWorstPct=Math.min(this.paperWorstPct,pnlPct);
         this.positions.delete(p.mint);
-        dogBrain.recordTradeClose(p,pnlPct,reason);
+        dogBrain.recordTradeClose(p,pnlPct,reason,price);
         this.rememberExit(p,price,pnlPct); this.saveState();
         const icon=pnlUsd>=0?"✅💰":"🛑💀";
         log.info(`${icon} PAPER SELL COMPLETE | 🪙 ${p.name} ($${p.symbol}) | ${reason} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Returned:$${outUsd.toFixed(2)} | ${pnlUsd>=0?"🟢 PROFIT":"🔴 LOSS"}:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${pnlPct>=0?"🚀":"📉"} ROI:${pnlPct>=0?"+":""}${pnlPct.toFixed(1)}% | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | sim costs:${costPct.toFixed(2)}%`);
@@ -301,7 +304,7 @@ export class Trader {
       const soldFraction = before.amount > 0n ? Number(soldRaw * 10_000n / before.amount) / 100 : 100;
       const effectivelyClosed = after.amount === 0n || soldFraction >= 99.5;
 
-      if (effectivelyClosed) { this.positions.delete(p.mint); this.rememberExit(p,currentPrice??p.entryPriceUsd,pnlPct); this.saveState(); }
+      if (effectivelyClosed) { this.positions.delete(p.mint); dogBrain.recordTradeClose(p,pnlPct,reason,currentPrice??p.entryPriceUsd); this.rememberExit(p,currentPrice??p.entryPriceUsd,pnlPct); this.saveState(); }
       else {
         p.tokenAmountRaw = after.amount; this.saveState();
         log.warn(`[SELL] ${p.name} ($${p.symbol}) | ⚠️ PARTIAL EXIT ${soldFraction.toFixed(2)}% | ${reason} | remaining raw ${after.amount.toString()} | tx ${result.signature}`);
@@ -331,6 +334,7 @@ export class Trader {
   private logCurrentTrade(p: Position, price: number, index: number, total: number, executable?: ExecutableExit | null) {
     const chartPnl = ((price-p.entryPriceUsd)/p.entryPriceUsd)*100;
     const peakPnl = ((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100;
+    const peakGivebackPct=peakPnl>0?Math.max(0,(peakPnl-chartPnl)/peakPnl*100):0;
     const ageSec = Math.floor((Date.now()-p.openedAt)/1000);
     const mm = Math.floor(ageSec/60).toString().padStart(2,"0");
     const ss = (ageSec%60).toString().padStart(2,"0");
@@ -342,9 +346,9 @@ export class Trader {
       : "";
     if(p.paper){
       const netValue=chartValue*(1-this.paperCostsPct()/100); const pnlUsd=netValue-p.entryUsd;
-      log.info(`👀🐶 PAPER POSITION ${index}/${total} | 🪙 ${p.name} ($${p.symbol}) | 📍 Entry:$${p.entryPriceUsd.toPrecision(6)} | 💲 Current:$${price.toPrecision(6)} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Value:$${netValue.toFixed(2)} | ${pnlUsd>=0?"🟢":"🔴"} P&L:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${chartPnl>=0?"🚀":"📉"} ROI:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | 👑 Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | ⏱️ Held:${mm}:${ss} | ${p.lane==="FLAME"?"🔥":"🎯"} Lane:${p.lane??"NORMAL"} | Score:${score} | CA:${p.mint}`);
+      log.info(`👀🐶 PAPER POSITION ${index}/${total} | 🪙 ${p.name} ($${p.symbol}) | 📍 Entry:$${p.entryPriceUsd.toPrecision(6)} | 💲 Current:$${price.toPrecision(6)} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Value:$${netValue.toFixed(2)} | ${pnlUsd>=0?"🟢":"🔴"} P&L:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${chartPnl>=0?"🚀":"📉"} ROI:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | 👑 Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | ↩️ Giveback:${peakGivebackPct.toFixed(0)}% | ⏱️ Held:${mm}:${ss} | ${p.lane==="FLAME"?"🔥":"🎯"} Lane:${p.lane??"NORMAL"} | Score:${score} | CA:${p.mint}`);
     } else {
-      log.info(`[CURRENT TRADE ${index}/${total}] ${status} | ${p.name} ($${p.symbol}) | Entry:$${p.entryPriceUsd.toPrecision(6)} | Current:$${price.toPrecision(6)} | Position:$${p.entryUsd.toFixed(2)} | ChartValue≈$${chartValue.toFixed(2)} | Chart P/L:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}%${real} | Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | Held:${mm}:${ss} | Lane:${p.lane??"NORMAL"}${p.basisUnknown?"/RECOVERED":""} | BuyScore:${score} | CA:${p.mint}`);
+      log.info(`[CURRENT TRADE ${index}/${total}] ${status} | ${p.name} ($${p.symbol}) | Entry:$${p.entryPriceUsd.toPrecision(6)} | Current:$${price.toPrecision(6)} | Position:$${p.entryUsd.toFixed(2)} | ChartValue≈$${chartValue.toFixed(2)} | Chart P/L:${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}%${real} | Peak:${peakPnl>=0?"+":""}${peakPnl.toFixed(1)}% | Giveback:${peakGivebackPct.toFixed(0)}% | Held:${mm}:${ss} | Lane:${p.lane??"NORMAL"}${p.basisUnknown?"/RECOVERED":""} | BuyScore:${score} | CA:${p.mint}`);
     }
   }
 
@@ -423,12 +427,16 @@ export class Trader {
         const hardStop=isFlame?config.flameStopLossPct:config.hardStopLossPct;
         const protectArm=isFlame?config.flameProfitProtectArmPct:config.profitProtectArmPct;
         const trail=isFlame?config.flameTrailingStopPct:config.trailingStopPct;
+        const chartPeakPnl=((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100;
+        const chartPeakGivebackPct=chartPeakPnl>0?Math.max(0,(chartPeakPnl-chartPnl)/chartPeakPnl*100):0;
 
         if (p.paper) {
           if (shouldLogStatus) this.logCurrentTrade(p, price, index, positions.length);
           if (chartPnl >= takeProfit) await this.sell(p, `TAKE PROFIT ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -hardStop) await this.sell(p, `HARD STOP ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -config.softStopLossPct && !momentumStrong) await this.sell(p, `MOMENTUM STOP ${chartPnl.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x`, price);
+          else if (chartPeakPnl >= config.peakProfitArmPct && chartPnl <= config.peakProfitFloorPct) await this.sell(p, `PEAK FLOOR | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | floor +${config.peakProfitFloorPct}%`, price);
+          else if (chartPeakPnl >= config.peakProfitArmPct && chartPeakGivebackPct >= config.peakGivebackExitPct) await this.sell(p, `PEAK GIVEBACK | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | gave back ${chartPeakGivebackPct.toFixed(0)}%`, price);
           else if (chartPnl >= protectArm && chartDrawdown <= -trail) await this.sell(p, `PROFIT PROTECT ${chartDrawdown.toFixed(1)}% from high`, price);
           else if (ageMin >= config.maxPositionAgeMin) await this.sell(p, `TIME EXIT ${ageMin.toFixed(1)}m`, price);
           continue;
@@ -444,6 +452,7 @@ export class Trader {
 
         const peakExecutable = p.highExecutablePnlPct ?? executable.pnlPct;
         const executableDrawdown = peakExecutable - executable.pnlPct;
+        const executablePeakGivebackPct=peakExecutable>0?Math.max(0,executableDrawdown/peakExecutable*100):0;
         const quoteDropPct = previousExecutableUsd && previousExecutableUsd > 0
           ? ((previousExecutableUsd - executable.outUsd) / previousExecutableUsd) * 100
           : 0;
@@ -469,9 +478,16 @@ export class Trader {
         else if (executable.pnlPct <= -config.softStopLossPct && !momentumStrong) {
           await this.sell(p, `MOMENTUM STOP REAL ${executable.pnlPct.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x | price momentum ${momentumPrice.toFixed(1)}%`, price, executable);
         }
-        // 5) Once +15% real profit exists, allow only an 8-point giveback from the executable peak.
+        // 5) Peak-profit ratchet: once +10% real profit has existed, protect a +2% floor and exit after 70% of the peak gain is surrendered.
+        else if (peakExecutable >= config.peakProfitArmPct && executable.pnlPct <= config.peakProfitFloorPct) {
+          await this.sell(p, `PEAK FLOOR REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | floor +${config.peakProfitFloorPct}%`, price, executable);
+        }
+        else if (peakExecutable >= config.peakProfitArmPct && executablePeakGivebackPct >= config.peakGivebackExitPct) {
+          await this.sell(p, `PEAK GIVEBACK REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | gave back ${executablePeakGivebackPct.toFixed(0)}%`, price, executable);
+        }
+        // 6) Preserve the existing lane-specific point trail as a second profit-protection layer.
         else if (peakExecutable >= protectArm && executableDrawdown >= trail) {
-          await this.sell(p, `PROFIT PROTECT | REAL peak +${peakExecutable.toFixed(1)}% → +${executable.pnlPct.toFixed(1)}%`, price, executable);
+          await this.sell(p, `PROFIT PROTECT | REAL peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}%`, price, executable);
         }
         else if (ageMin >= config.maxPositionAgeMin) {
           await this.sell(p, `TIME EXIT ${ageMin.toFixed(1)}m | REAL ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}%`, price, executable);

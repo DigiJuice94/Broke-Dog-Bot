@@ -1,3 +1,14 @@
+# Broke Dog Bot v1.9.0 — Peak-Profit Ratchet
+
+**v1.9.0 changes:**
+- Adds the approved **peak-profit ratchet** to PAPER and LIVE exits.
+- Once a position has reached **+10% peak profit**, the bot protects a **+2% profit floor**.
+- After the +10% arm point, the bot exits if the trade gives back **70% of its peak gain**. Example: a +13.3% peak triggers the giveback exit around +4.0%, instead of allowing the trade to turn into a normal stop-loss.
+- LIVE mode uses **Jupiter executable P/L** for the ratchet; PAPER mode uses tracked market P/L. Existing hard stops, momentum stops, take-profit, liquidity-collapse protection, and lane-specific trailing exits are preserved.
+- Position logs now show **peak giveback %** so it is obvious when a winner is fading.
+- Dog Brain now records **entry/exit, max peak, percent of peak surrendered, exit reason**, plus **1m / 5m / 15m / 30m / 60m post-exit outcomes**.
+- Adds configurable `PEAK_PROFIT_ARM_PCT=10`, `PEAK_PROFIT_FLOOR_PCT=2`, and `PEAK_GIVEBACK_EXIT_PCT=70`.
+
 # Broke Dog Bot v1.8.0 — Dog Brain Self-Critique Email
 
 **v1.8.0 changes:**

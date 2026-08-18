@@ -20,7 +20,7 @@ async function main(){
   log.info(`Discovery rotation: active cap ${config.maxActiveCandidates} | fresh target ${config.freshCandidatesPerCycle}/cycle | rotate stale score <${config.staleEvictScore} after ${Math.round(config.staleEvictAgeMs/1000)}s | Mobula ranked pool ${config.mobulaTrendingLimit}`);
   log.info(`Discovery: Social watchlist + Mobula/Axiom-style + Birdeye + DEX/FOMO | v8.3-style Helius launch/holder safety added`);
   log.info(`Social: ${config.xBearerToken?"OPTIONAL X CONFIGURED":"OFF"} | discovery/confirmation only — never a mandatory normal-buy trigger`);
-  log.info(`Exits: Jupiter executable P/L | normal TP +${config.takeProfitPct}% / hard -${config.hardStopLossPct}% | 🔥 TP +${config.flameTakeProfitPct}% / stop -${config.flameStopLossPct}%`);
+  log.info(`Exits: Jupiter executable P/L | normal TP +${config.takeProfitPct}% / hard -${config.hardStopLossPct}% | 🔥 TP +${config.flameTakeProfitPct}% / stop -${config.flameStopLossPct}% | 🛡️ peak ratchet arms +${config.peakProfitArmPct}% → floor +${config.peakProfitFloorPct}% / exit at ${config.peakGivebackExitPct}% peak giveback`);
   log.info(`Mobula Axiom-style: ${config.mobulaApiKey?"ON":"OFF — add MOBULA_API_KEY"} | interval ${Math.round(config.mobulaTrendingIntervalMs/1000)}s`);
   log.info(`Birdeye: new ${Math.round(config.birdeyeNewIntervalMs/60000)}m | trending ${Math.round(config.birdeyeTrendingIntervalMs/60000)}m | deep top ${config.birdeyeDeepCandidates} at score ≥${config.birdeyeDeepMinScore} | CU budget ${config.birdeyeCuBudgetPerHour}/hr`);
   log.info(`Positions: 2 normal slots + reserved 3rd slot for score ${config.thirdPositionScore}+ | max allocation ${config.maxPositionWalletPct}% | daily loss brake $${config.maxDailyLossUsd}`);
