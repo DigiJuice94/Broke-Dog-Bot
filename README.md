@@ -249,3 +249,14 @@ If OpenRouter is unavailable, rate-limited, times out, or returns an error, Brok
 - Daily cap defaults: 30 coin reviews, 44 total AI calls. This leaves headroom beyond the normal 12 report calls.
 - AI call usage is persisted via AI_USAGE_FILE / Railway Volume so redeploys do not reset the day's counter.
 - If OpenRouter is unavailable, rate-limited, or the budget is exhausted, normal Dog Bot trading continues.
+
+## v1.11.0 — Micro-Cycle + Trade Forensics
+- Adds Dog Brain Micro-Cycle states: DEAD → WAKING → BUILDING → BREAKOUT → RUNNING → EXHAUSTING.
+- Tracks score velocity/acceleration, buyer acceleration, volume acceleration, price velocity, buy/sell pressure, money flow, structure breaks and higher lows.
+- Adds a bounded micro-cycle score adjustment (default ±8) on top of the existing scoring system.
+- Adds Anti-FOMO blocking for very late/extended entries (default late-entry risk >=82).
+- FLAME now additionally requires strong Micro-Cycle + Runner Probability when the engine has enough data.
+- Every new position persists its full entry-analysis snapshot so restarts do not erase trade context.
+- Paper SELL ledger records hold time, peak P&L, peak giveback, exit reason and full entry-analysis data.
+- Email reports add a per-trade Trade Forensics section for comparing winners vs losers.
+- Existing Dog Brain memory file/path is unchanged; this upgrade does not intentionally reset learned history.

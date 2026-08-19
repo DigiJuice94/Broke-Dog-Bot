@@ -5,7 +5,7 @@ import { DexScreener } from "./dexscreener.ts";
 import { log } from "./log.ts";
 
 type LaneProfile="NORMAL"|"FLAME";
-type FeatureName="buyPressure"|"volumeMomentum"|"priceMomentum"|"liquidity"|"earlyAge"|"multiSource"|"socialHeat"|"routeQuality"|"bundleSafety";
+type FeatureName="buyPressure"|"volumeMomentum"|"priceMomentum"|"liquidity"|"earlyAge"|"multiSource"|"socialHeat"|"routeQuality"|"bundleSafety"|"microCycle"|"runnerProbability"|"scoreVelocity"|"lateEntrySafety"|"structureBreak";
 type FeatureVector=Record<FeatureName,number>;
 type OutcomePoint={minute:number;at:number;priceUsd:number;returnPct:number};
 type ExitOutcomePoint={minute:number;at:number;priceUsd:number;returnFromEntryPct:number;returnFromExitPct:number};
@@ -17,7 +17,7 @@ type LearningRecord={
 };
 type BrainState={version:number;day:string;weights:Record<LaneProfile,Record<FeatureName,number>>;dailyMovement:Record<LaneProfile,Record<FeatureName,number>>;samples:Record<LaneProfile,number>;records:LearningRecord[];lastReportAt:number;lastLearnAt:number;rollbacks:number;baselinePaperMetric?:number;};
 
-const FEATURES:FeatureName[]=["buyPressure","volumeMomentum","priceMomentum","liquidity","earlyAge","multiSource","socialHeat","routeQuality","bundleSafety"];
+const FEATURES:FeatureName[]=["buyPressure","volumeMomentum","priceMomentum","liquidity","earlyAge","multiSource","socialHeat","routeQuality","bundleSafety","microCycle","runnerProbability","scoreVelocity","lateEntrySafety","structureBreak"];
 const zeroWeights=()=>Object.fromEntries(FEATURES.map(k=>[k,0])) as Record<FeatureName,number>;
 const clamp=(v:number,a=-1,b=1)=>Math.max(a,Math.min(b,v));
 const day=()=>new Date().toISOString().slice(0,10);
@@ -34,7 +34,8 @@ class DogBrain {
   private resetDay(){const d=day();if(this.state.day!==d){this.state.day=d;this.state.dailyMovement={NORMAL:zeroWeights(),FLAME:zeroWeights()};this.save();}}
   private lane(c:Candidate):LaneProfile{const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;return c.entryLane==="FLAME"||(age<=config.flameMaxAgeMin&&(c.runnerScore??0)>=75)?"FLAME":"NORMAL";}
   private vector(c:Candidate):FeatureVector{const s=c.snapshots.at(-1);const prev=c.snapshots.length>1?c.snapshots.at(-2):undefined;const buys=Number(s?.buys1m??s?.buys5m??0),sells=Number(s?.sells1m??s?.sells5m??0),ratio=buys/Math.max(1,sells);const vol=Number(s?.volume1mUsd??((s?.volume5mUsd??0)/5));const prevVol=Number(prev?.volume1mUsd??((prev?.volume5mUsd??0)/5));const volAccel=prevVol>0?(vol/prevVol-1):0;const p=Number(s?.priceChange1mPct??s?.priceChange5mPct??0);const liq=Number(s?.liquidityUsd??0);const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;const risk=s?.onChainRisk;const bundle=risk?.bundleRisk==="low"?1:risk?.bundleRisk==="medium"?-0.35:risk?.bundleRisk==="high"?-1:0;return {
-    buyPressure:clamp((ratio-1)/3),volumeMomentum:clamp(volAccel/2),priceMomentum:clamp(p/25),liquidity:clamp((Math.log10(Math.max(100,liq))-3.5)/2),earlyAge:clamp(1-age/30),multiSource:clamp((c.sources.size-1)/4),socialHeat:clamp(Number(s?.social?.score??0)/100),routeQuality:clamp(((s?.routeQuality??50)-50)/50),bundleSafety:bundle
+    buyPressure:clamp((ratio-1)/3),volumeMomentum:clamp(volAccel/2),priceMomentum:clamp(p/25),liquidity:clamp((Math.log10(Math.max(100,liq))-3.5)/2),earlyAge:clamp(1-age/30),multiSource:clamp((c.sources.size-1)/4),socialHeat:clamp(Number(s?.social?.score??0)/100),routeQuality:clamp(((s?.routeQuality??50)-50)/50),bundleSafety:bundle,
+    microCycle:clamp(((c.microCycle?.score??50)-50)/50),runnerProbability:clamp(((c.microCycle?.runnerProbability??50)-50)/50),scoreVelocity:clamp((c.microCycle?.scoreVelocity??0)/20),lateEntrySafety:clamp((50-(c.microCycle?.lateEntryRisk??50))/50),structureBreak:c.microCycle?.structureBreak?1:0
   };}
   observe(c:Candidate){if(!config.dogBrainEnabled)return;this.ensureLoaded();const s=c.snapshots.at(-1);if(!s?.priceUsd||s.priceUsd<=0)return;let r=this.state.records.find(x=>x.mint===c.token.address&&!x.resolved);if(!r){r={mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane:this.lane(c),mode:config.liveTrading?"LIVE":"PAPER",decision:"WATCHING",firstSeenAt:c.firstSeenAt,decisionAt:Date.now(),baselinePriceUsd:s.priceUsd,score:c.score,confidence:c.dataConfidence,features:this.vector(c),outcomes:[],maxReturnPct:0,minReturnPct:0,resolved:false};this.state.records.push(r);if(this.state.records.length>config.dogBrainMaxRecords)this.state.records=this.state.records.slice(-config.dogBrainMaxRecords);}else if(r.decision==="WATCHING"){r.name=c.token.name;r.symbol=c.token.symbol;r.lane=this.lane(c);r.score=c.score;r.confidence=c.dataConfidence;r.features=this.vector(c);}this.save();}
   markDecision(c:Candidate,decision:"REJECTED"|"BOUGHT"){if(!config.dogBrainEnabled)return;this.observe(c);const r=this.state.records.find(x=>x.mint===c.token.address&&!x.resolved);if(!r)return;r.decision=decision;r.mode=config.liveTrading?"LIVE":"PAPER";r.decisionAt=Date.now();r.decisionReason=c.decisionReason;r.lane=this.lane(c);r.score=c.score;r.confidence=c.dataConfidence;r.features=this.vector(c);this.save();}
@@ -65,7 +66,7 @@ class DogBrain {
     const strongest=[...weights].sort((a,b)=>b.abs-a.abs)[0];
     const positive=[...weights].filter(x=>x.w>0).sort((a,b)=>b.w-a.w)[0];
     const warning=[...weights].filter(x=>x.w<0).sort((a,b)=>a.w-b.w)[0];
-    const labels:Record<FeatureName,string>={buyPressure:"buy pressure",volumeMomentum:"volume acceleration",priceMomentum:"price momentum",liquidity:"liquidity",earlyAge:"very early age",multiSource:"multi-source confirmation",socialHeat:"social/meta heat",routeQuality:"sell-route quality",bundleSafety:"bundle safety"};
+    const labels:Record<FeatureName,string>={buyPressure:"buy pressure",volumeMomentum:"volume acceleration",priceMomentum:"price momentum",liquidity:"liquidity",earlyAge:"very early age",multiSource:"multi-source confirmation",socialHeat:"social/meta heat",routeQuality:"sell-route quality",bundleSafety:"bundle safety",microCycle:"micro-cycle strength",runnerProbability:"runner probability",scoreVelocity:"score velocity",lateEntrySafety:"early-entry timing",structureBreak:"bullish structure breaks"};
     const lessons=recent.filter(r=>r.resolved).slice(-5).reverse().map(r=>`${r.name} ($${r.symbol}) ${r.decision}: max ${r.maxReturnPct>=0?"+":""}${r.maxReturnPct.toFixed(1)}%, min ${r.minReturnPct.toFixed(1)}%${r.tradeExitPct!=null?`, exit ${r.tradeExitPct>=0?"+":""}${r.tradeExitPct.toFixed(1)}%`:""}`);
 
     const good=resolved.filter(r=>(r.tradeExitPct??r.maxReturnPct)>=10||r.maxReturnPct>=config.dogBrainRunnerPct);

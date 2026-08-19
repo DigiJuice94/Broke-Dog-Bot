@@ -1,0 +1,35 @@
+BROKE DOG BOT v1.11.0 — MICRO-CYCLE + TRADE FORENSICS
+
+Base: v1.10.2 Credit-Smart AI Buy Gate
+
+NEW RAILWAY VARIABLES (copy/paste):
+MICRO_CYCLE_ENABLED=true
+MICRO_CYCLE_MIN_SNAPSHOTS=2
+MICRO_CYCLE_MAX_SCORE_ADJUSTMENT=8
+MICRO_CYCLE_ANTI_FOMO_ENABLED=true
+MICRO_CYCLE_LATE_ENTRY_BLOCK_RISK=82
+MICRO_CYCLE_FLAME_MIN_SCORE=86
+MICRO_CYCLE_FLAME_MIN_RUNNER_PROBABILITY=82
+TRADE_FORENSICS_ENABLED=true
+TRADE_FORENSICS_MAX_EMAIL_TRADES=12
+
+NOT CHANGED BY THIS UPDATE:
+- LIVE_TRADING setting
+- Existing Dog Brain memory filename/path
+- Paper wallet starting balance
+- $75 / $85 / $100 paper sizing caps
+- 75 normal BUY_SCORE
+- AI credit-smart near-buy review limits
+- Existing persistent state/ledger files
+
+TONIGHT'S DATA TO WATCH:
+- Micro-cycle state
+- Runner probability
+- Late-entry risk / Anti-FOMO blocks
+- Score velocity and score acceleration
+- Buyer and volume acceleration
+- Structure break / higher-low confirmation
+- Entry risk/holder/bundle data
+- Peak P&L and peak giveback
+- Exit reason and hold time
+- Winner vs loser differences in the email Trade Forensics section

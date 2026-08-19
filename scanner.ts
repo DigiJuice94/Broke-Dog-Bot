@@ -281,6 +281,9 @@ export class Scanner {
       const paperSafety=paperRiskGate(snap.onChainRisk);
       const entryRisk=(!config.liveTrading&&config.paperFastSafety)?paperSafety:strictRisk;
       const flameRisk=(!config.liveTrading&&config.paperFastSafety)?paperSafety:flameRiskGate(snap.onChainRisk);
+      const micro=c.microCycle;
+      const microFlameOK=!config.microCycleEnabled || !micro || (micro.score>=config.microCycleFlameMinScore && micro.runnerProbability>=config.microCycleFlameMinRunnerProbability && !micro.antiFomoBlocked);
+      const antiFomoBlocked=!!(config.microCycleEnabled && micro?.antiFomoBlocked);
       const flame=config.flameEnabled
         && c.score>=config.flameMinScore
         && (c.runnerScore??0)>=config.flameMinRunnerScore
@@ -290,7 +293,8 @@ export class Scanner {
         && volume1m>=config.flameMinVolume1mUsd
         && tokenAgeMin<=config.flameMaxAgeMin
         && routesOK
-        && flameRisk.ok;
+        && flameRisk.ok
+        && microFlameOK;
       const requiredObservationMs=(!config.liveTrading&&config.paperFastSafety)?config.paperMinObservationMs:config.minObservationMs;
       const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?config.paperMinDataConfidence:config.minDataConfidence;
       const aiEligibleBase=age>=requiredObservationMs
@@ -315,19 +319,22 @@ export class Scanner {
         && c.dataConfidence>=requiredConfidence
         && routesOK
         && entryRisk.ok
-        && !aiVeto;
+        && !aiVeto
+        && !antiFomoBlocked;
 
       if(aiPromote) log.info(`[🤖 AI PROMOTE] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} below normal ${config.buyScore}, but AI BUY ${aiDecision!.confidence}% | all hard gates passed`);
       if(aiVeto) log.warn(`[🤖 AI PASS] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} | AI PASS ${aiDecision!.confidence}% | ${aiDecision!.reason}`);
 
       if(flame){
         c.state="READY"; c.entryLane="FLAME";
-        c.decisionReason=`🔥 FLAME AUTO BUY | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | B/S ${buySellRatio.toFixed(1)}x | vol $${Math.round(volume1m)} | ${flameRisk.why}`;
+        c.decisionReason=`🔥 FLAME AUTO BUY | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | micro ${Math.round(micro?.score??0)} | RP ${Math.round(micro?.runnerProbability??0)} | B/S ${buySellRatio.toFixed(1)}x | vol $${Math.round(volume1m)} | ${flameRisk.why}`;
         log.info(`[🔥 FLAME] ${c.token.name} ($${c.token.symbol}) | AUTO BUY | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Quality:${Math.round(c.qualityScore??0)} Data:${Math.round(c.dataConfidence)}% B/S:${buySellRatio.toFixed(1)}x Vol:$${Math.round(volume1m)} Sources:${sourceCount}`);
       } else if(normalEntry){
         c.state="READY"; c.entryLane=c.score>=config.eliteScore?"ELITE":"NORMAL";
         const aiNote=aiDecision?.ok?` | 🤖 AI ${aiDecision.verdict} ${aiDecision.confidence}%${aiPromote?" PROMOTED":""}`:aiDecision?.budgetReason?` | 🤖 AI FALLBACK (${aiDecision.budgetReason})`:"";
-        c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | ${entryRisk.why}${aiNote}`;
+        c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | micro ${Math.round(micro?.score??0)} RP ${Math.round(micro?.runnerProbability??0)} late ${Math.round(micro?.lateEntryRisk??0)} | ${entryRisk.why}${aiNote}`;
+      } else if(antiFomoBlocked){
+        c.state="DROPPED"; c.lastDroppedAt=Date.now(); c.decisionReason=`NO BUY: 🧯 ANTI-FOMO late-entry risk ${Math.round(micro?.lateEntryRisk??0)}/100 | cycle ${micro?.state??"?"} | runner probability ${Math.round(micro?.runnerProbability??0)}`; dogBrain.markDecision(c,"REJECTED");
       } else if(aiVeto){
         c.state="DROPPED"; c.lastDroppedAt=Date.now(); c.decisionReason=`NO BUY: 🤖 AI PASS ${aiDecision!.confidence}% | ${aiDecision!.reason}`; dogBrain.markDecision(c,"REJECTED");
       } else if(age>=config.maxObservationMs){
@@ -346,7 +353,7 @@ export class Scanner {
         status:c.state==="READY"?"✅ READY":c.state==="DROPPED"?"❌ NO BUY":`⏳ ${c.state}`,reason:c.decisionReason,sources:[...c.sources],rankText:this.rankText(c),
         details:{buys1m:snap.buys1m,sells1m:snap.sells1m,buys5m:snap.buys5m,sells5m:snap.sells5m,volume1mUsd:snap.volume1mUsd,volume5mUsd:snap.volume5mUsd,
           liquidityUsd:snap.liquidityUsd,holderCount:snap.holderCount,uniqueWallet1m:snap.uniqueWallet1m,
-          top10HolderPct:snap.onChainRisk?.top10Pct??snap.top10HolderPct,top1HolderPct:snap.onChainRisk?.top1Pct,top5HolderPct:snap.onChainRisk?.top5Pct,bundleClass:snap.onChainRisk?.bundleRisk,devRisk:snap.onChainRisk?.devRisk,holderRisk:snap.onChainRisk?.holderRisk,linkedSupply:snap.onChainRisk?.estimatedLinkedSupplyPct,socialScore:snap.social?.score,socialAccounts:snap.social?.keyAccounts?.join(","),meta:snap.social?.dominantMeta?.slice(0,3).join("/"),smart:snap.smartMoney?.checked?`S:${snap.smartMoney.smartTraders} Sn:${snap.smartMoney.snipers} In:${snap.smartMoney.insiders} B:${snap.smartMoney.bundlers}`:undefined,metaRunner:c.metaRunner,deep:`S:${snap.onChainRisk?.checked?"Y":snap.onChainRisk?"~":"-"} BE:${finalBirdeye?"Y":"-"} H:${finalHolder?"Y":"-"} B:${finalBundle?"Y":"-"} R:${finalRoute?"Y":"-"}`}});
+          top10HolderPct:snap.onChainRisk?.top10Pct??snap.top10HolderPct,top1HolderPct:snap.onChainRisk?.top1Pct,top5HolderPct:snap.onChainRisk?.top5Pct,bundleClass:snap.onChainRisk?.bundleRisk,devRisk:snap.onChainRisk?.devRisk,holderRisk:snap.onChainRisk?.holderRisk,linkedSupply:snap.onChainRisk?.estimatedLinkedSupplyPct,socialScore:snap.social?.score,socialAccounts:snap.social?.keyAccounts?.join(","),meta:snap.social?.dominantMeta?.slice(0,3).join("/"),smart:snap.smartMoney?.checked?`S:${snap.smartMoney.smartTraders} Sn:${snap.smartMoney.snipers} In:${snap.smartMoney.insiders} B:${snap.smartMoney.bundlers}`:undefined,metaRunner:c.metaRunner,microState:micro?.state,microScore:micro?.score,runnerProbability:micro?.runnerProbability,lateEntryRisk:micro?.lateEntryRisk,exhaustionRisk:micro?.exhaustionRisk,scoreVelocity:micro?.scoreVelocity,buyerAccel:micro?.buyerAccelerationPct,volumeAccel:micro?.volumeAccelerationPct,structureBreak:micro?.structureBreak,deep:`S:${snap.onChainRisk?.checked?"Y":snap.onChainRisk?"~":"-"} BE:${finalBirdeye?"Y":"-"} H:${finalHolder?"Y":"-"} B:${finalBundle?"Y":"-"} R:${finalRoute?"Y":"-"}`}});
       if(c.state==="READY")await this.onReady(c);
     }catch(e){log.warn(`[SCAN ERROR] ${c.token.name} ${c.token.address}: ${e instanceof Error?e.message:String(e)}`);}finally{c.collecting=false;}
   }

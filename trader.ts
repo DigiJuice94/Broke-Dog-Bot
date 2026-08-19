@@ -1,6 +1,6 @@
 import { Jupiter } from "./jupiter.ts";
 import { config, LAMPORTS_PER_SOL, SOL_MINT } from "./config.ts";
-import { Candidate, Position } from "./types.ts";
+import { Candidate, Position, TradeEntryAnalysis } from "./types.ts";
 import { log } from "./log.ts";
 import { choosePositionUsd } from "./sizing.ts";
 import { WalletService } from "./wallet.ts";
@@ -11,7 +11,7 @@ import { socialPerformance } from "./socialPerformance.ts";
 import { migrateLegacyFile, readJsonRecovered, writeJsonAtomic } from "./persistence.ts";
 import { dogBrain } from "./dogBrain.ts";
 
-type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;exitPnlPct:number;peakPnlPct:number;peakGivebackPct:number;closedAt:number;logged:Set<number>;socialAccounts:string[]};
+type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;entryUsd?:number;exitPnlPct:number;peakPnlPct:number;peakGivebackPct:number;closedAt:number;openedAt?:number;exitReason?:string;entryAnalysis?:TradeEntryAnalysis;logged:Set<number>;socialAccounts:string[]};
 
 type ExecutableExit = {
   amountRaw: bigint;
@@ -114,6 +114,10 @@ export class Trader {
     log.info(`💰🐶 PAPER WALLET 🐶💰 | 💵 Equity:$${equity.toFixed(2)} | 🏦 Cash:$${this.paperCashUsd.toFixed(2)} | 📈 Open:$${openValue.toFixed(2)} | ${totalPnl>=0?"🟢":"🔴"} Total P&L:${sign(totalPnl)}$${totalPnl.toFixed(2)} (${sign(totalReturn)}${totalReturn.toFixed(1)}%) | ✅ Realized:${sign(this.paperRealizedUsd)}$${this.paperRealizedUsd.toFixed(2)} | 👀 Unrealized:${sign(unrealized)}$${unrealized.toFixed(2)} | 📅 Today:${sign(this.paperDayRealizedUsd)}$${this.paperDayRealizedUsd.toFixed(2)} | 🏆 W:${this.paperWins} 💀 L:${this.paperLosses} 🎯 WR:${winRate.toFixed(1)}%${Number.isFinite(this.paperBestPct)?` | 🔥 Best:${sign(this.paperBestPct)}${this.paperBestPct.toFixed(1)}%`:""}${Number.isFinite(this.paperWorstPct)?` | 🧊 Worst:${sign(this.paperWorstPct)}${this.paperWorstPct.toFixed(1)}%`:""}`);
   }
   private positionsArrayPaperCost(){ let total=0; for(const p of this.positions.values())if(p.paper)total+=p.entryUsd; return total; }
+  private entryAnalysis(c:Candidate):TradeEntryAnalysis{
+    const s=c.snapshots.at(-1)!; const risk=s.onChainRisk; const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;
+    return {score:c.score,runnerScore:c.runnerScore,qualityScore:c.qualityScore,confidence:c.dataConfidence,marketScore:c.marketScore,socialScore:c.socialScore,safetyScore:c.safetyScore,microCycle:c.microCycle,liquidityUsd:s.liquidityUsd,marketCapUsd:s.marketCapUsd,holderCount:s.holderCount,uniqueWallet1m:s.uniqueWallet1m,volume1mUsd:s.volume1mUsd,volume5mUsd:s.volume5mUsd,buys1m:s.buys1m,sells1m:s.sells1m,buyVolume1mUsd:s.buyVolume1mUsd,sellVolume1mUsd:s.sellVolume1mUsd,priceChange1mPct:s.priceChange1mPct,priceChange5mPct:s.priceChange5mPct,top1Pct:risk?.top1Pct,top5Pct:risk?.top5Pct,top10Pct:risk?.top10Pct??s.top10HolderPct,bundleRisk:risk?.bundleRisk,holderRisk:risk?.holderRisk,devRisk:risk?.devRisk,linkedSupplyPct:risk?.estimatedLinkedSupplyPct,smartMoneyScore:s.smartMoney?.score,socialAccounts:s.social?.keyAccounts??[],dominantMeta:s.social?.dominantMeta??[],metaRunner:c.metaRunner,sources:[...c.sources],tokenAgeMin:age,routeQuality:s.routeQuality,buyRoute:s.buyRoute,sellRoute:s.sellRoute};
+  }
   private appendPaperLedger(entry:any){
     try{ migrateLegacyFile(config.paperLedgerFile,"broke-dog-paper-ledger.json"); let ledger:any[]=readJsonRecovered<any[]>(config.paperLedgerFile)??[]; if(!Array.isArray(ledger))ledger=[]; ledger.push(entry); writeJsonAtomic(config.paperLedgerFile,ledger); }
     catch(e){ log.warn(`[PAPER LEDGER] save failed: ${e instanceof Error?e.message:String(e)}`); }
@@ -173,11 +177,11 @@ export class Trader {
         this.positions.set(c.token.address, {
           mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals:c.token.decimals || 6,
           tokenAmountRaw:0n,entrySolLamports:lamports,entryUsd:usd,entryPriceUsd:entryPrice,paperEntryCostUsd:usd,
-          openedAt:Date.now(),highPriceUsd:entryPrice,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane
+          openedAt:Date.now(),highPriceUsd:entryPrice,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
         });
         c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
         log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥🐶 PAPER FLAME BUY":"🧪🐶 PAPER BUY",reason:`${lane} | 💵 Invested:$${usd.toFixed(2)} | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | 📍 Entry:$${entryPrice.toPrecision(6)} | CA:${c.token.address}` });
-        this.appendPaperLedger({type:"BUY",at:new Date().toISOString(),mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane,entryPriceUsd:entryPrice,investedUsd:usd,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,score:c.score,confidence:c.dataConfidence});
+        this.appendPaperLedger({type:"BUY",at:new Date().toISOString(),mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane,entryPriceUsd:entryPrice,investedUsd:usd,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,score:c.score,confidence:c.dataConfidence,analysis:this.entryAnalysis(c)});
         this.logPaperWallet(undefined,true);
         void this.notifier.send({
           title: `🐶 PAPER BUY $${c.token.symbol}`,
@@ -195,7 +199,7 @@ export class Trader {
       this.positions.set(c.token.address, {
         mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals,tokenAmountRaw:raw,
         entrySolLamports:result.inRaw,entryUsd:usd,entryPriceUsd:actualEntryPrice,openedAt:Date.now(),highPriceUsd:actualEntryPrice,
-        signature:result.signature,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:false,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane
+        signature:result.signature,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:false,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
       });
       c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
       log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥 FLAME BOUGHT":"🟢 BOUGHT",reason:`${lane} | $${usd.toFixed(2)} | Contract:${c.token.address} | tx ${result.signature}` });
@@ -243,7 +247,7 @@ export class Trader {
     const chartPeak=((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100;
     const peakPnlPct=(!p.paper&&p.highExecutablePnlPct!=null)?p.highExecutablePnlPct:chartPeak;
     const peakGivebackPct=peakPnlPct>0?Math.max(0,(peakPnlPct-pnlPct)/peakPnlPct*100):0;
-    this.closedTracks.push({mint:p.mint,name:p.name,symbol:p.symbol,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,exitPnlPct:pnlPct,peakPnlPct,peakGivebackPct,closedAt:Date.now(),logged:new Set(),socialAccounts:p.socialAccountsAtBuy??[]});
+    this.closedTracks.push({mint:p.mint,name:p.name,symbol:p.symbol,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,entryUsd:p.entryUsd,exitPnlPct:pnlPct,peakPnlPct,peakGivebackPct,closedAt:Date.now(),openedAt:p.openedAt,entryAnalysis:p.entryAnalysis,logged:new Set(),socialAccounts:p.socialAccountsAtBuy??[]});
     this.closedTracks=this.closedTracks.filter(x=>Date.now()-x.closedAt<=65*60000);
   }
 
@@ -274,7 +278,7 @@ export class Trader {
         this.rememberExit(p,price,pnlPct); this.saveState();
         const icon=pnlUsd>=0?"✅💰":"🛑💀";
         log.info(`${icon} PAPER SELL COMPLETE | 🪙 ${p.name} ($${p.symbol}) | ${reason} | 💵 Invested:$${p.entryUsd.toFixed(2)} | 💰 Returned:$${outUsd.toFixed(2)} | ${pnlUsd>=0?"🟢 PROFIT":"🔴 LOSS"}:${pnlUsd>=0?"+":""}$${pnlUsd.toFixed(2)} | ${pnlPct>=0?"🚀":"📉"} ROI:${pnlPct>=0?"+":""}${pnlPct.toFixed(1)}% | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | sim costs:${costPct.toFixed(2)}%`);
-        this.appendPaperLedger({type:"SELL",at:new Date().toISOString(),mint:p.mint,name:p.name,symbol:p.symbol,lane:p.lane,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,investedUsd:p.entryUsd,returnedUsd:outUsd,pnlUsd,pnlPct,reason,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,simulatedCostsPct:costPct});
+        this.appendPaperLedger({type:"SELL",at:new Date().toISOString(),mint:p.mint,name:p.name,symbol:p.symbol,lane:p.lane,entryPriceUsd:p.entryPriceUsd,exitPriceUsd:price,investedUsd:p.entryUsd,returnedUsd:outUsd,pnlUsd,pnlPct,reason,cashBeforeUsd:walletBefore,cashAfterUsd:this.paperCashUsd,simulatedCostsPct:costPct,heldSeconds:Math.max(0,Math.round((Date.now()-p.openedAt)/1000)),peakPriceUsd:p.highPriceUsd,peakPnlPct:((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100,peakGivebackPct:p.highPriceUsd>p.entryPriceUsd?Math.max(0,(((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100-pnlPct)/(((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100)*100):0,analysis:p.entryAnalysis});
         this.logPaperWallet(undefined,true);
         void this.notifier.send({
           title: `💰 PAPER SOLD $${p.symbol}`,
@@ -359,12 +363,12 @@ export class Trader {
     const pos=[...this.positions.values()].filter(p=>mode==="PAPER"?!!p.paper:!p.paper);
     let priceMap=new Map<string,number>();
     if(pos.length){try{const m=await this.dex.batch(pos.map(p=>p.mint));priceMap=new Map([...m].map(([k,v]:any)=>[k,Number(v?.priceUsd??0)]));}catch{}}
-    const openPositions=pos.map(p=>{const px=priceMap.get(p.mint)||p.entryPriceUsd; const pnl=(px/p.entryPriceUsd-1)*100;return {mint:p.mint,name:p.name,symbol:p.symbol,entryUsd:p.entryUsd,entryPriceUsd:p.entryPriceUsd,currentPriceUsd:px,pnlPct:pnl,lane:p.lane??"NORMAL",openedAt:p.openedAt};});
+    const openPositions=pos.map(p=>{const px=priceMap.get(p.mint)||p.entryPriceUsd; const pnl=(px/p.entryPriceUsd-1)*100;return {mint:p.mint,name:p.name,symbol:p.symbol,entryUsd:p.entryUsd,entryPriceUsd:p.entryPriceUsd,currentPriceUsd:px,pnlPct:pnl,lane:p.lane??"NORMAL",openedAt:p.openedAt,entryAnalysis:p.entryAnalysis};});
     if(mode==="PAPER"){
       let ledger:any[]=[];try{migrateLegacyFile(config.paperLedgerFile,"broke-dog-paper-ledger.json");const x=readJsonRecovered<any[]>(config.paperLedgerFile);if(Array.isArray(x))ledger=x;}catch{}
       const recent=ledger.filter(x=>{const t=Date.parse(x.at??"");return Number.isFinite(t)&&now-t<=sinceMs;});
       const buys=recent.filter(x=>x.type==="BUY"); const sells=recent.filter(x=>x.type==="SELL");
-      const closedTrades=sells.map(x=>({name:x.name??"?",symbol:x.symbol??"?",pnlPct:Number(x.pnlPct??0),pnlUsd:Number(x.pnlUsd??0),reason:x.reason??"paper exit",at:x.at}));
+      const closedTrades=sells.map(x=>({name:x.name??"?",symbol:x.symbol??"?",mint:x.mint,lane:x.lane??"NORMAL",entryPriceUsd:Number(x.entryPriceUsd??0),exitPriceUsd:Number(x.exitPriceUsd??0),investedUsd:Number(x.investedUsd??0),returnedUsd:Number(x.returnedUsd??0),pnlPct:Number(x.pnlPct??0),pnlUsd:Number(x.pnlUsd??0),reason:x.reason??"paper exit",heldSeconds:Number(x.heldSeconds??0),peakPnlPct:Number(x.peakPnlPct??0),peakGivebackPct:Number(x.peakGivebackPct??0),analysis:x.analysis,at:x.at}));
       const wins=closedTrades.filter(x=>x.pnlPct>0).length,losses=closedTrades.filter(x=>x.pnlPct<=0).length;
       const openValueUsd=openPositions.reduce((a,p)=>a+p.entryUsd*(p.currentPriceUsd/p.entryPriceUsd)*(1-this.paperCostsPct()/100),0);
       const equityUsd=this.paperCashUsd+openValueUsd,totalPnlUsd=equityUsd-config.paperStartBalanceUsd,totalReturnPct=config.paperStartBalanceUsd?totalPnlUsd/config.paperStartBalanceUsd*100:0;
@@ -383,7 +387,7 @@ export class Trader {
     const recentClosed=this.closedTracks.filter(x=>now-x.closedAt<=sinceMs);
     const buys=openPositions.filter(p=>now-p.openedAt<=sinceMs).map(p=>({type:"BUY",...p}));
     const sells=recentClosed.map(x=>({type:"SELL",name:x.name,symbol:x.symbol,pnlPct:x.exitPnlPct,at:new Date(x.closedAt).toISOString()}));
-    const closedTrades=recentClosed.map(x=>({name:x.name,symbol:x.symbol,pnlPct:x.exitPnlPct,pnlUsd:x.entryPriceUsd>0?0:0,reason:"live exit",at:new Date(x.closedAt).toISOString()}));
+    const closedTrades=recentClosed.map(x=>({name:x.name,symbol:x.symbol,mint:x.mint,entryPriceUsd:x.entryPriceUsd,exitPriceUsd:x.exitPriceUsd,investedUsd:x.entryUsd??0,pnlPct:x.exitPnlPct,pnlUsd:0,reason:x.exitReason??"live exit",heldSeconds:x.openedAt?Math.max(0,Math.round((x.closedAt-x.openedAt)/1000)):0,peakPnlPct:x.peakPnlPct,peakGivebackPct:x.peakGivebackPct,analysis:x.entryAnalysis,at:new Date(x.closedAt).toISOString()}));
     const wins=closedTrades.filter(x=>x.pnlPct>0).length,losses=closedTrades.filter(x=>x.pnlPct<=0).length;
     let solBalance=0,solUsd=0;try{[solBalance,solUsd]=await Promise.all([this.wallet.solBalance(),this.solPrice.get()]);}catch{}
     return {mode,solBalance,walletSolUsd:solBalance*solUsd,realizedTodayUsd:this.realizedToday,wins,losses,buys,sells,closedTrades,openPositions};

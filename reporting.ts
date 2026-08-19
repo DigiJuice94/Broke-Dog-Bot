@@ -59,6 +59,33 @@ export class EmailReporter {
     return lines;
   }
 
+  private forensicLines(label:string,s:any){
+    if(!config.tradeForensicsEnabled)return [];
+    const trades=[...(s.closedTrades??[])].slice(-config.tradeForensicsMaxEmailTrades);
+    const lines=["","━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",`🔬📊 ${label} TRADE FORENSICS — WHY DID WE TAKE THESE TRADES?`,`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`];
+    if(!trades.length){lines.push("No trades closed in this report window. Entry snapshots will appear here after each trade closes.");return lines;}
+    const n=(v:any,d=1)=>Number.isFinite(Number(v))?Number(v).toFixed(d):"N/A";
+    const sign=(v:any)=>Number(v)>=0?"+":"";
+    for(const [i,t] of trades.entries()){
+      const a=t.analysis??{},m=a.microCycle??{};
+      lines.push("",`#${i+1} ${Number(t.pnlPct)>=0?"✅":"❌"} ${t.name} ($${t.symbol}) | ${t.lane??"NORMAL"} | P&L ${pct(Number(t.pnlPct??0))}`);
+      lines.push(`CA: ${t.mint??"N/A"}`);
+      lines.push(`💵 Invested $${n(t.investedUsd,2)} | Entry $${n(t.entryPriceUsd,8)} → Exit $${n(t.exitPriceUsd,8)} | Returned ${t.returnedUsd==null?"N/A":`$${n(t.returnedUsd,2)}`}`);
+      lines.push(`⏱️ Held ${Math.floor(Number(t.heldSeconds??0)/60)}m ${Math.round(Number(t.heldSeconds??0)%60)}s | Exit: ${t.reason??"N/A"} | 👑 Peak ${sign(t.peakPnlPct)}${n(t.peakPnlPct)}% | ↩️ Peak giveback ${n(t.peakGivebackPct)}%`);
+      lines.push(`🎯 Entry scores — Dog ${n(a.score,0)}/100 | Quality ${n(a.qualityScore,0)} | Runner ${n(a.runnerScore,0)} | Confidence ${n(a.confidence,0)}% | Safety ${n(a.safetyScore,0)} | Social ${n(a.socialScore,0)}`);
+      lines.push(`🐕 Micro-cycle — ${m.state??"N/A"} ${n(m.score,0)}/100 | Runner probability ${n(m.runnerProbability,0)} | Late-entry ${n(m.lateEntryRisk,0)} | Exhaustion ${n(m.exhaustionRisk,0)} | Adj ${sign(m.adjustment)}${n(m.adjustment)}`);
+      lines.push(`⚡ Acceleration — Score ${sign(m.scoreVelocity)}${n(m.scoreVelocity)}/min | Score accel ${sign(m.scoreAcceleration)}${n(m.scoreAcceleration)}/min² | Buyers ${sign(m.buyerAccelerationPct)}${n(m.buyerAccelerationPct)}% | Volume ${sign(m.volumeAccelerationPct)}${n(m.volumeAccelerationPct)}% | Price velocity ${sign(m.priceVelocityPct)}${n(m.priceVelocityPct)}%`);
+      lines.push(`💸 Flow — B/S ${n(m.buySellRatio,2)}x | Buy$/Sell$ ${n(m.moneyFlowRatio,2)}x | Structure break ${m.structureBreak?"YES":"no"} | Higher low ${m.higherLow?"YES":"no"}`);
+      lines.push(`📊 Market — Liq $${n(a.liquidityUsd,0)} | MC $${n(a.marketCapUsd,0)} | Vol1m $${n(a.volume1mUsd,0)} | Vol5m $${n(a.volume5mUsd,0)} | Buys/Sells ${n(a.buys1m,0)}/${n(a.sells1m,0)} | Unique wallets ${n(a.uniqueWallet1m,0)} | Age ${n(a.tokenAgeMin)}m`);
+      lines.push(`🛡️ Risk — Bundle ${a.bundleRisk??"unknown"} | Holder ${a.holderRisk??"unknown"} | Dev ${a.devRisk??"unknown"} | Top1 ${n(a.top1Pct)}% | Top5 ${n(a.top5Pct)}% | Top10 ${n(a.top10Pct)}% | Linked ${n(a.linkedSupplyPct)}%`);
+      lines.push(`📣 Social/meta — ${a.metaRunner?"META RUNNER | ":""}accounts ${(a.socialAccounts??[]).join(",")||"none"} | meta ${(a.dominantMeta??[]).slice(0,3).join("/")||"none"} | smart-money ${n(a.smartMoneyScore,0)}`);
+      lines.push(`📡 Sources — ${(a.sources??[]).join(", ")||"N/A"} | Route quality ${n(a.routeQuality,0)} | Buy route ${a.buyRoute?"Y":"N"} / Sell route ${a.sellRoute?"Y":"N"}`);
+      if(m.reasons?.length)lines.push(`🧠 Signal reasons — ${m.reasons.join(" | ")}`);
+    }
+    lines.push("","🧪 ANALYSIS GOAL: compare winners vs losers on entry timing, acceleration, structure, flow, risk, peak giveback and exit reason. Dog Brain keeps learning from the same persistent history; this section does not reset prior memory.");
+    return lines;
+  }
+
   private aiLines(label:string,review?:AiBrainReview){
     if(!review?.enabled)return [`🤖🧠 ${label} AI BRAIN: OFF — add OPENROUTER_API_KEY to enable the free external analyst.`];
     if(!review.ok)return [review.text];
@@ -81,7 +108,8 @@ export class EmailReporter {
       `📥 Paper buys: ${s.buys.length} | 📤 Paper sells: ${s.sells.length}`
     ];
     if(s.closedTrades.length){lines.push("","📈 PAPER CLOSED TRADES");for(const t of s.closedTrades.slice(-10))lines.push(`• ${t.name} ($${t.symbol}) ${pct(t.pnlPct)} — ${t.reason??"paper exit"}`);}
-    if(s.openPositions.length){lines.push("","👀 PAPER OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}`);}
+    if(s.openPositions.length){lines.push("","👀 PAPER OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}${p.entryAnalysis?.microCycle?` | 🐕 ${p.entryAnalysis.microCycle.state} ${Math.round(p.entryAnalysis.microCycle.score)} RP:${Math.round(p.entryAnalysis.microCycle.runnerProbability)}`:""}`);}
+    lines.push(...this.forensicLines("PAPER",s));
     lines.push("",...this.brainLines("PAPER",brain));
     return lines;
   }
@@ -99,6 +127,7 @@ export class EmailReporter {
     if(!config.liveTrading)lines.push("🧪 LIVE TRADING OFF — wallet balance/history is shown for reference only; no new live buys are being placed.");
     if(s.closedTrades.length){lines.push("","📈 LIVE CLOSED TRADES");for(const t of s.closedTrades.slice(-10))lines.push(`• ${t.name} ($${t.symbol}) ${pct(t.pnlPct)} — ${t.reason??"live exit"}`);}
     if(s.openPositions.length){lines.push("","👀 LIVE OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}`);}
+    lines.push(...this.forensicLines("LIVE",s));
     lines.push("",...this.brainLines("LIVE",brain));
     return lines;
   }
