@@ -183,7 +183,7 @@ EMAIL_REPORT_ENABLED=true
 RESEND_API_KEY=re_xxxxxxxxx
 REPORT_EMAIL=you@example.com
 REPORT_FROM=Broke Dog Bot <onboarding@resend.dev>
-REPORT_INTERVAL_MINUTES=60
+REPORT_INTERVAL_MINUTES=30
 REPORT_TIMEZONE=America/Denver
 HOURLY_PAPER_REPORT=true
 HOURLY_LIVE_REPORT=true
@@ -217,7 +217,7 @@ Routine provider `429` retry/backoff messages are silent by default so Railway l
 
 ## v1.10.0 — Free AI Brain (OpenRouter)
 
-This version adds an optional external AI analyst that reviews Dog Brain's hourly/daily report data. It is intentionally **advisor-only**: it cannot place trades, alter environment variables, rewrite strategy code, bypass safety, or change risk settings.
+This version adds an optional external AI analyst that reviews Dog Brain's 2-hour report data as a profit-focused co-analyst. It is intentionally **advisor-only**: it cannot place trades, alter environment variables, rewrite strategy code, bypass safety, or change risk settings.
 
 Railway variables:
 
@@ -229,3 +229,23 @@ Railway variables:
 - `AI_BRAIN_MAX_CHARS=8000`
 
 If OpenRouter is unavailable, rate-limited, times out, or returns an error, Broke Dog Bot continues normally and the regular Dog Brain keeps learning. Paper and live evidence are kept separate; when live trading is off, the live AI review is skipped.
+
+
+## v1.10.2 — 30-Minute Profit Coach
+- Default email cadence is now 2 hours (`REPORT_INTERVAL_MINUTES=30`).
+- Each 2-hour email uses one combined OpenRouter AI call to conserve the free request quota while keeping PAPER and LIVE evidence explicitly separate.
+- AI now reports: what is working, what is hurting profitability, how Dog Brain should improve, highest-impact parameter tests, entry/coin-selection quality, exit/profit-protection quality, and a path toward better expected profitability.
+- AI is still advisor-only: it cannot place trades, change environment variables, rewrite code, bypass safety, or change risk settings.
+- The daily summary does not make a separate AI request, preserving the free-model request budget for the 2-hour reports.
+
+
+## v1.10.2 — Credit-Smart AI Buy Gate
+- Deep AI profit-coach email every 2 hours (12/day if continuously running).
+- AI coin review only in the near-buy score window (default 72–78).
+- Scores 75–78: confident AI PASS can veto; AI unavailable falls back to normal Dog Bot rules.
+- Scores 72–74: AI can promote only with >=90% BUY confidence AND all deterministic observation/data/route/safety gates already pass.
+- Scores above 78 and FLAME candidates do not spend AI calls by default.
+- Hard safety always wins; AI cannot override a safety failure.
+- Daily cap defaults: 30 coin reviews, 44 total AI calls. This leaves headroom beyond the normal 12 report calls.
+- AI call usage is persisted via AI_USAGE_FILE / Railway Volume so redeploys do not reset the day's counter.
+- If OpenRouter is unavailable, rate-limited, or the budget is exhausted, normal Dog Bot trading continues.

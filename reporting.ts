@@ -62,7 +62,7 @@ export class EmailReporter {
   private aiLines(label:string,review?:AiBrainReview){
     if(!review?.enabled)return [`🤖🧠 ${label} AI BRAIN: OFF — add OPENROUTER_API_KEY to enable the free external analyst.`];
     if(!review.ok)return [review.text];
-    return [`🤖🧠 ${label} AI BRAIN REVIEW — ${review.model??config.aiBrainModel}`,review.text,"🔒 ADVISOR ONLY — AI Brain cannot place trades, alter strategy settings, or rewrite bot code."];
+    return [`🤖🧠 ${label} AI BRAIN PROFIT REVIEW — ${review.model??config.aiBrainModel}`,review.text,"🔒 ADVISOR ONLY — AI Brain can recommend tests but cannot place trades, alter strategy settings, or rewrite bot code."];
   }
 
   private paperLines(s:any,brain:any,windowLabel:string,ai?:AiBrainReview){
@@ -82,7 +82,7 @@ export class EmailReporter {
     ];
     if(s.closedTrades.length){lines.push("","📈 PAPER CLOSED TRADES");for(const t of s.closedTrades.slice(-10))lines.push(`• ${t.name} ($${t.symbol}) ${pct(t.pnlPct)} — ${t.reason??"paper exit"}`);}
     if(s.openPositions.length){lines.push("","👀 PAPER OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}`);}
-    lines.push("",...this.brainLines("PAPER",brain),"",...this.aiLines("PAPER",ai));
+    lines.push("",...this.brainLines("PAPER",brain));
     return lines;
   }
 
@@ -99,7 +99,7 @@ export class EmailReporter {
     if(!config.liveTrading)lines.push("🧪 LIVE TRADING OFF — wallet balance/history is shown for reference only; no new live buys are being placed.");
     if(s.closedTrades.length){lines.push("","📈 LIVE CLOSED TRADES");for(const t of s.closedTrades.slice(-10))lines.push(`• ${t.name} ($${t.symbol}) ${pct(t.pnlPct)} — ${t.reason??"live exit"}`);}
     if(s.openPositions.length){lines.push("","👀 LIVE OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}`);}
-    lines.push("",...this.brainLines("LIVE",brain),"",...this.aiLines("LIVE",ai));
+    lines.push("",...this.brainLines("LIVE",brain));
     return lines;
   }
 
@@ -114,15 +114,15 @@ export class EmailReporter {
     return base.length<=280?base:base.slice(0,277).trimEnd()+"…";
   }
 
-  private combinedFormat(paper:any,live:any,paperBrain:any,liveBrain:any,windowLabel:string,paperAi?:AiBrainReview,liveAi?:AiBrainReview){
+  private combinedFormat(paper:any,live:any,paperBrain:any,liveBrain:any,windowLabel:string,combinedAi?:AiBrainReview){
     return [
       `🐶 BROKE DOG DUAL-WALLET REPORT — ${this.localStamp()}`,
       `⏱️ Window: ${windowLabel}`,
       `🤖 Active trading mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER"}`,
       "",
-      ...this.paperLines(paper,paperBrain,windowLabel,paperAi),
+      ...this.paperLines(paper,paperBrain,windowLabel),
       "",
-      ...this.liveLines(live,liveBrain,windowLabel,liveAi),
+      ...this.liveLines(live,liveBrain,windowLabel),
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "🧠🐶 OVERALL DOG BRAIN TAKEAWAY",
@@ -131,6 +131,11 @@ export class EmailReporter {
         ? "Dog Brain is currently learning from LIVE decisions. Paper history stays separate above."
         : "Dog Brain is currently learning from PAPER decisions. Live wallet/history stays separate above.",
       "Paper and live trades are never combined when calculating wallet P&L, trade counts, or Brain outcomes.",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "🤖💰 AI BRAIN — PROFIT COACH",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      ...this.aiLines("COMBINED",combinedAi),
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "🐦🐶 DOG BRAIN'S SUGGESTED TWEET",
@@ -149,12 +154,9 @@ export class EmailReporter {
       ]);
       const paperBrain=dogBrain.reportSnapshot("PAPER",config.reportIntervalMs);
       const liveBrain=dogBrain.reportSnapshot("LIVE",config.reportIntervalMs);
-      const [paperAi,liveAi]=await Promise.all([
-        aiBrain.review("PAPER",paper,paperBrain,"hour"),
-        config.liveTrading?aiBrain.review("LIVE",live,liveBrain,"hour"):Promise.resolve({enabled:aiBrain.enabled(),ok:false,text:"🤖 LIVE AI review skipped because LIVE_TRADING=false. Paper and live evidence remain separate."} as AiBrainReview)
-      ]);
-      await this.send(`🐶 BROKE DOG — PAPER + LIVE — ${this.localStamp()}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"hour",paperAi,liveAi));
-      log.info("📧🐶 Combined dual-wallet hourly email sent | PAPER + LIVE kept separate");
+      const combinedAi=await aiBrain.reviewCombined(paper,live,paperBrain,liveBrain,"2-hour");
+      await this.send(`🐶 BROKE DOG — 2-HOUR PROFIT REPORT — ${this.localStamp()}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"2 hours",combinedAi));
+      log.info("📧🐶 Combined 2-hour profit email sent | one AI call | PAPER + LIVE kept separate");
     }catch(e){log.warn(`[EMAIL REPORT] hourly send failed: ${e instanceof Error?e.message:String(e)}`);}
   }
 
@@ -170,11 +172,8 @@ export class EmailReporter {
       ]);
       const paperBrain=dogBrain.reportSnapshot("PAPER",24*3600000);
       const liveBrain=dogBrain.reportSnapshot("LIVE",24*3600000);
-      const [paperAi,liveAi]=await Promise.all([
-        aiBrain.review("PAPER",paper,paperBrain,"day"),
-        config.liveTrading?aiBrain.review("LIVE",live,liveBrain,"day"):Promise.resolve({enabled:aiBrain.enabled(),ok:false,text:"🤖 LIVE AI review skipped because LIVE_TRADING=false. Paper and live evidence remain separate."} as AiBrainReview)
-      ]);
-      await this.send(`🐶 BROKE DOG DAILY — PAPER + LIVE — ${d}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"day",paperAi,liveAi));
+      const dailyAi:AiBrainReview={enabled:aiBrain.enabled(),ok:false,text:"🤖 Daily AI call skipped to preserve the free OpenRouter request budget. The 2-hour AI profit reviews remain active; Dog Brain daily data is shown above."};
+      await this.send(`🐶 BROKE DOG DAILY — PAPER + LIVE — ${d}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"day",dailyAi));
       log.info("📧🐶 Combined dual-wallet daily email sent");
     }catch(e){log.warn(`[EMAIL REPORT] daily send failed: ${e instanceof Error?e.message:String(e)}`);}
   }

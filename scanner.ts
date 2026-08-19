@@ -12,6 +12,7 @@ import { SocialIntel } from "./social.ts";
 import { SmartMoneyIntel } from "./smartMoney.ts";
 import { analyzeRisk, fastSafetyCheck, paperRiskGate, normalRiskGate, flameRiskGate } from "./risk.ts";
 import { dogBrain } from "./dogBrain.ts";
+import { aiBrain } from "./aiBrain.ts";
 
 export class Scanner {
   readonly candidates = new Map<string, Candidate>();
@@ -292,11 +293,32 @@ export class Scanner {
         && flameRisk.ok;
       const requiredObservationMs=(!config.liveTrading&&config.paperFastSafety)?config.paperMinObservationMs:config.minObservationMs;
       const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?config.paperMinDataConfidence:config.minDataConfidence;
-      const normalEntry=age>=requiredObservationMs
-        && c.score>=config.buyScore
+      const aiEligibleBase=age>=requiredObservationMs
+        && c.score>=config.aiCoinMinScore
+        && c.score<=config.aiCoinMaxScore
         && c.dataConfidence>=requiredConfidence
         && routesOK
-        && entryRisk.ok;
+        && entryRisk.ok
+        && !flame;
+      let aiDecision: Awaited<ReturnType<typeof aiBrain.reviewCoin>> | undefined;
+      if(aiEligibleBase) aiDecision=await aiBrain.reviewCoin(c);
+
+      // AI is a constrained second opinion, not a replacement for deterministic safety.
+      // 75-78: a confident PASS can veto; unavailable/no-opinion falls back to normal Dog Bot.
+      // 72-74: AI may promote ONLY with very high confidence and all normal non-score gates already passed.
+      const aiVeto=!!aiDecision?.ok && aiDecision.verdict==="PASS" && aiDecision.confidence>=config.aiCoinPassConfidence;
+      const aiPromote=c.score<config.buyScore
+        && !!aiDecision?.ok && aiDecision.verdict==="BUY" && aiDecision.confidence>=config.aiCoinPromoteConfidence;
+      const scoreApproved=c.score>=config.buyScore || aiPromote;
+      const normalEntry=age>=requiredObservationMs
+        && scoreApproved
+        && c.dataConfidence>=requiredConfidence
+        && routesOK
+        && entryRisk.ok
+        && !aiVeto;
+
+      if(aiPromote) log.info(`[🤖 AI PROMOTE] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} below normal ${config.buyScore}, but AI BUY ${aiDecision!.confidence}% | all hard gates passed`);
+      if(aiVeto) log.warn(`[🤖 AI PASS] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} | AI PASS ${aiDecision!.confidence}% | ${aiDecision!.reason}`);
 
       if(flame){
         c.state="READY"; c.entryLane="FLAME";
@@ -304,7 +326,10 @@ export class Scanner {
         log.info(`[🔥 FLAME] ${c.token.name} ($${c.token.symbol}) | AUTO BUY | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Quality:${Math.round(c.qualityScore??0)} Data:${Math.round(c.dataConfidence)}% B/S:${buySellRatio.toFixed(1)}x Vol:$${Math.round(volume1m)} Sources:${sourceCount}`);
       } else if(normalEntry){
         c.state="READY"; c.entryLane=c.score>=config.eliteScore?"ELITE":"NORMAL";
-        c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | ${entryRisk.why}`;
+        const aiNote=aiDecision?.ok?` | 🤖 AI ${aiDecision.verdict} ${aiDecision.confidence}%${aiPromote?" PROMOTED":""}`:aiDecision?.budgetReason?` | 🤖 AI FALLBACK (${aiDecision.budgetReason})`:"";
+        c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | ${entryRisk.why}${aiNote}`;
+      } else if(aiVeto){
+        c.state="DROPPED"; c.lastDroppedAt=Date.now(); c.decisionReason=`NO BUY: 🤖 AI PASS ${aiDecision!.confidence}% | ${aiDecision!.reason}`; dogBrain.markDecision(c,"REJECTED");
       } else if(age>=config.maxObservationMs){
         c.state="DROPPED";c.lastDroppedAt=Date.now();
         const why=!routesOK?"buy/sell route unavailable":c.score<config.buyScore?`score ${Math.round(c.score)} < ${config.buyScore}`:c.dataConfidence<requiredConfidence?`data ${Math.round(c.dataConfidence)}% < ${requiredConfidence}%`:!entryRisk.ok?entryRisk.why:"observation ended";

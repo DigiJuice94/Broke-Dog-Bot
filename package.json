@@ -1,6 +1,6 @@
 {
   "name": "broke-dog-bot",
-  "version": "1.10.0",
+  "version": "1.10.2",
   "private": true,
   "type": "module",
   "scripts": {
