@@ -2,6 +2,7 @@ import { config } from "./config.ts";
 import { log } from "./log.ts";
 import { Trader } from "./trader.ts";
 import { dogBrain } from "./dogBrain.ts";
+import { aiBrain, AiBrainReview } from "./aiBrain.ts";
 
 const money=(n:number)=>`${n>=0?"+":"-"}$${Math.abs(n).toFixed(2)}`;
 const pct=(n:number)=>`${n>=0?"+":""}${n.toFixed(1)}%`;
@@ -58,7 +59,13 @@ export class EmailReporter {
     return lines;
   }
 
-  private paperLines(s:any,brain:any,windowLabel:string){
+  private aiLines(label:string,review?:AiBrainReview){
+    if(!review?.enabled)return [`🤖🧠 ${label} AI BRAIN: OFF — add OPENROUTER_API_KEY to enable the free external analyst.`];
+    if(!review.ok)return [review.text];
+    return [`🤖🧠 ${label} AI BRAIN REVIEW — ${review.model??config.aiBrainModel}`,review.text,"🔒 ADVISOR ONLY — AI Brain cannot place trades, alter strategy settings, or rewrite bot code."];
+  }
+
+  private paperLines(s:any,brain:any,windowLabel:string,ai?:AiBrainReview){
     const lines=[
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "🧪💰 PAPER WALLET",
@@ -75,11 +82,11 @@ export class EmailReporter {
     ];
     if(s.closedTrades.length){lines.push("","📈 PAPER CLOSED TRADES");for(const t of s.closedTrades.slice(-10))lines.push(`• ${t.name} ($${t.symbol}) ${pct(t.pnlPct)} — ${t.reason??"paper exit"}`);}
     if(s.openPositions.length){lines.push("","👀 PAPER OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}`);}
-    lines.push("",...this.brainLines("PAPER",brain));
+    lines.push("",...this.brainLines("PAPER",brain),"",...this.aiLines("PAPER",ai));
     return lines;
   }
 
-  private liveLines(s:any,brain:any,windowLabel:string){
+  private liveLines(s:any,brain:any,windowLabel:string,ai?:AiBrainReview){
     const lines=[
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "🔴💰 LIVE WALLET",
@@ -92,7 +99,7 @@ export class EmailReporter {
     if(!config.liveTrading)lines.push("🧪 LIVE TRADING OFF — wallet balance/history is shown for reference only; no new live buys are being placed.");
     if(s.closedTrades.length){lines.push("","📈 LIVE CLOSED TRADES");for(const t of s.closedTrades.slice(-10))lines.push(`• ${t.name} ($${t.symbol}) ${pct(t.pnlPct)} — ${t.reason??"live exit"}`);}
     if(s.openPositions.length){lines.push("","👀 LIVE OPEN POSITIONS");for(const p of s.openPositions)lines.push(`• ${p.name} ($${p.symbol}) | $${p.entryUsd.toFixed(2)} | ${pct(p.pnlPct)} | ${p.lane}`);}
-    lines.push("",...this.brainLines("LIVE",brain));
+    lines.push("",...this.brainLines("LIVE",brain),"",...this.aiLines("LIVE",ai));
     return lines;
   }
 
@@ -107,15 +114,15 @@ export class EmailReporter {
     return base.length<=280?base:base.slice(0,277).trimEnd()+"…";
   }
 
-  private combinedFormat(paper:any,live:any,paperBrain:any,liveBrain:any,windowLabel:string){
+  private combinedFormat(paper:any,live:any,paperBrain:any,liveBrain:any,windowLabel:string,paperAi?:AiBrainReview,liveAi?:AiBrainReview){
     return [
       `🐶 BROKE DOG DUAL-WALLET REPORT — ${this.localStamp()}`,
       `⏱️ Window: ${windowLabel}`,
       `🤖 Active trading mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER"}`,
       "",
-      ...this.paperLines(paper,paperBrain,windowLabel),
+      ...this.paperLines(paper,paperBrain,windowLabel,paperAi),
       "",
-      ...this.liveLines(live,liveBrain,windowLabel),
+      ...this.liveLines(live,liveBrain,windowLabel,liveAi),
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "🧠🐶 OVERALL DOG BRAIN TAKEAWAY",
@@ -142,7 +149,11 @@ export class EmailReporter {
       ]);
       const paperBrain=dogBrain.reportSnapshot("PAPER",config.reportIntervalMs);
       const liveBrain=dogBrain.reportSnapshot("LIVE",config.reportIntervalMs);
-      await this.send(`🐶 BROKE DOG — PAPER + LIVE — ${this.localStamp()}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"hour"));
+      const [paperAi,liveAi]=await Promise.all([
+        aiBrain.review("PAPER",paper,paperBrain,"hour"),
+        config.liveTrading?aiBrain.review("LIVE",live,liveBrain,"hour"):Promise.resolve({enabled:aiBrain.enabled(),ok:false,text:"🤖 LIVE AI review skipped because LIVE_TRADING=false. Paper and live evidence remain separate."} as AiBrainReview)
+      ]);
+      await this.send(`🐶 BROKE DOG — PAPER + LIVE — ${this.localStamp()}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"hour",paperAi,liveAi));
       log.info("📧🐶 Combined dual-wallet hourly email sent | PAPER + LIVE kept separate");
     }catch(e){log.warn(`[EMAIL REPORT] hourly send failed: ${e instanceof Error?e.message:String(e)}`);}
   }
@@ -159,7 +170,11 @@ export class EmailReporter {
       ]);
       const paperBrain=dogBrain.reportSnapshot("PAPER",24*3600000);
       const liveBrain=dogBrain.reportSnapshot("LIVE",24*3600000);
-      await this.send(`🐶 BROKE DOG DAILY — PAPER + LIVE — ${d}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"day"));
+      const [paperAi,liveAi]=await Promise.all([
+        aiBrain.review("PAPER",paper,paperBrain,"day"),
+        config.liveTrading?aiBrain.review("LIVE",live,liveBrain,"day"):Promise.resolve({enabled:aiBrain.enabled(),ok:false,text:"🤖 LIVE AI review skipped because LIVE_TRADING=false. Paper and live evidence remain separate."} as AiBrainReview)
+      ]);
+      await this.send(`🐶 BROKE DOG DAILY — PAPER + LIVE — ${d}`,this.combinedFormat(paper,live,paperBrain,liveBrain,"day",paperAi,liveAi));
       log.info("📧🐶 Combined dual-wallet daily email sent");
     }catch(e){log.warn(`[EMAIL REPORT] daily send failed: ${e instanceof Error?e.message:String(e)}`);}
   }

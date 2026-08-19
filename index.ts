@@ -7,6 +7,7 @@ import { WalletService } from "./wallet.ts";
 import { log } from "./log.ts";
 import { dogBrain } from "./dogBrain.ts";
 import { EmailReporter } from "./reporting.ts";
+import { aiBrain } from "./aiBrain.ts";
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
 async function main(){
@@ -26,6 +27,7 @@ async function main(){
   log.info(`Positions: 2 normal slots + reserved 3rd slot for score ${config.thirdPositionScore}+ | max allocation ${config.maxPositionWalletPct}% | daily loss brake $${config.maxDailyLossUsd}`);
   if(!config.liveTrading)log.info(`💰🐶 Paper wallet: starts $${config.paperStartBalanceUsd.toFixed(2)} | sizing caps NORMAL $${config.paperNormalMaxUsd} / ELITE $${config.paperEliteMaxUsd} / FLAME $${config.paperFlameMaxUsd} | simulated costs ${(config.paperTrackFees?config.paperFeePct:0)+(config.paperTrackSlippage?config.paperSlippagePct:0)}% | persistent ledger ${config.paperLedgerFile}`);
   log.info(`🧠 ${dogBrain.startupText()} | checkpoints 1m/5m/15m/30m/1h | max learned score ±${config.dogBrainMaxScoreAdjustment}`);
+  log.info(`🤖🧠 ${aiBrain.startupText()}`);
   log.info(`📧 Reports: ${emailReporter.enabled()?`ON → ${config.reportEmail} every ${Math.round(config.reportIntervalMs/60000)}m | PAPER:${config.hourlyPaperReport?"ON":"OFF"} LIVE:${config.hourlyLiveReport?"ON":"OFF"} | daily:${config.dailyEmailReport?"ON":"OFF"}`:"OFF — add RESEND_API_KEY + REPORT_EMAIL + EMAIL_REPORT_ENABLED=true"}`);
   log.info(`SOL/USD: background cache | Coinbase → DEX Screener → Jupiter emergency fallback | refresh ${Math.round(config.solUsdRefreshMs/1000)}s`);
   if(!config.xBearerToken)log.warn("X_BEARER_TOKEN missing — expected/OK. Social/meta discovery is skipped; market + on-chain scoring continue normally.");

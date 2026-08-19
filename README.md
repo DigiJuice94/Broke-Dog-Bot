@@ -214,3 +214,18 @@ Hourly/daily email now includes exact creator-facing parameter tests with curren
 
 ## v1.9.2 Quiet rate-limit retries
 Routine provider `429` retry/backoff messages are silent by default so Railway logs are not flooded. Retries still happen exactly as before. Set `RATE_LIMIT_VERBOSE=true` temporarily if you need to debug throttling. Final request failures are not converted into successes or ignored by this change.
+
+## v1.10.0 — Free AI Brain (OpenRouter)
+
+This version adds an optional external AI analyst that reviews Dog Brain's hourly/daily report data. It is intentionally **advisor-only**: it cannot place trades, alter environment variables, rewrite strategy code, bypass safety, or change risk settings.
+
+Railway variables:
+
+- `AI_BRAIN_ENABLED=true`
+- `OPENROUTER_API_KEY=<your OpenRouter key>`
+- `AI_BRAIN_MODEL=openrouter/free`
+- `AI_BRAIN_TIMEOUT_MS=30000`
+- `AI_BRAIN_MAX_TOKENS=1200`
+- `AI_BRAIN_MAX_CHARS=8000`
+
+If OpenRouter is unavailable, rate-limited, times out, or returns an error, Broke Dog Bot continues normally and the regular Dog Brain keeps learning. Paper and live evidence are kept separate; when live trading is off, the live AI review is skipped.
