@@ -162,6 +162,9 @@ Paper-mode route availability is recorded but does not block a simulated trade. 
 
 Paper defaults are also tuned to create more learning samples: `PAPER_MIN_OBSERVATION_MS=10000` and `PAPER_MIN_DATA_CONFIDENCE=60`. Candidates skipped because the wallet/position cap, daily loss brake, insufficient paper cash, or a failed buy are now explicitly recorded as rejected decisions so Dog Brain can follow them counterfactually instead of losing the sample.
 
+### v1.11.1 daily-loss split
+Paper and live trading now have independent daily loss brakes. Use `PAPER_MAX_DAILY_LOSS_USD` (default `$50`) for paper data collection and `LIVE_MAX_DAILY_LOSS_USD` (default `$7`) for live capital protection. `MAX_DAILY_LOSS_USD` remains as a legacy live fallback only. A paper loss no longer locks the live wallet, and the live loss brake no longer stops paper learning.
+
 
 ## v1.4.1 — DEX Rate-Limit Protection
 - Scanner and Trader now share one DEX Screener request throttle and cache.

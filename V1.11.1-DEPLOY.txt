@@ -1,0 +1,18 @@
+BROKE DOG BOT v1.11.1 — DUAL DAILY LOSS FIX
+
+WHAT CHANGED
+- Paper and live wallets now have separate daily loss brakes.
+- Paper default daily loss limit: $50.
+- Live default daily loss limit: $7.
+- Existing MAX_DAILY_LOSS_USD is kept only as a legacy fallback for the live limit.
+- Current paper losses are preserved. Example: if paper P&L is -$6.56, the bot is no longer locked because the paper brake is now -$50.
+
+RAILWAY VARIABLES TO ADD/UPDATE
+PAPER_MAX_DAILY_LOSS_USD=50
+LIVE_MAX_DAILY_LOSS_USD=7
+MAX_DAILY_LOSS_USD=7
+
+If LIVE_TRADING=false, only PAPER_MAX_DAILY_LOSS_USD controls the daily loss brake.
+If LIVE_TRADING=true, LIVE_MAX_DAILY_LOSS_USD controls the live daily loss brake.
+
+Persistent wallet, open-position, trade-history, and Dog Brain files are unchanged by this patch.

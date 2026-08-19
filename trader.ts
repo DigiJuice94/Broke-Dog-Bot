@@ -140,7 +140,14 @@ export class Trader {
     this.resetDailyIfNeeded(); await this.reconcileWallet();
     const open=this.positions.size, lane=c.entryLane??(c.score>=config.eliteScore?"ELITE":"NORMAL");
     const dailyPnl=config.liveTrading?this.realizedToday:this.paperDayRealizedUsd;
-    if(dailyPnl<=-config.maxDailyLossUsd){c.state="FAILED";c.decisionReason=`NO BUY: daily loss limit reached $${dailyPnl.toFixed(2)}`;dogBrain.markDecision(c,"REJECTED");log.warn(`[🛑 DAILY LOSS] ${c.token.name} skipped | ${c.decisionReason}`);return;}
+    const dailyLossLimit=config.liveTrading?config.liveMaxDailyLossUsd:config.paperMaxDailyLossUsd;
+    if(dailyPnl<=-dailyLossLimit){
+      c.state="FAILED";
+      c.decisionReason=`NO BUY: ${config.liveTrading?"live":"paper"} daily loss limit $${dailyLossLimit.toFixed(2)} reached | today $${dailyPnl.toFixed(2)}`;
+      dogBrain.markDecision(c,"REJECTED");
+      log.warn(`[🛑 DAILY LOSS] ${c.token.name} skipped | ${c.decisionReason}`);
+      return;
+    }
     if(open>=3){c.state="FAILED";c.decisionReason="NO BUY: 3 position hard cap reached";dogBrain.markDecision(c,"REJECTED");log.warn(`[NO BUY] ${c.token.name} | ${c.decisionReason}`);return;}
     if(open>=config.maxOpenPositions && c.score<config.thirdPositionScore){c.state="FAILED";c.decisionReason=`NO BUY: 2 slots full; third slot requires score ${config.thirdPositionScore}+`;dogBrain.markDecision(c,"REJECTED");log.warn(`[NO BUY] ${c.token.name} | Score:${Math.round(c.score)} | ${c.decisionReason}`);return;}
     this.busy.add(c.token.address);
