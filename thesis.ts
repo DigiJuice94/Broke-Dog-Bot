@@ -98,3 +98,22 @@ export function evaluateThesisExit(p:Position,s:Partial<Snapshot>){
   if(Number(s.volume5mUsd??0)>0&&Number(a.volume5mUsd??0)>0&&Number(s.volume5mUsd)<Number(a.volume5mUsd)*config.thesisVolumeDecayRatio)failures.push("turnover decayed below thesis requirement");
   return {failed:failures.length>=config.thesisExitFailureCount,failures};
 }
+
+export function evaluateStalkInvalidation(c:Candidate){
+  if(!config.opportunityStalkInvalidationEnabled || c.state!=="STALKING" || !c.snapshots.length) return {invalid:false,reasons:[] as string[]};
+  const s=c.snapshots.at(-1)!;
+  const supply=analyzeSupply(c);
+  const reasons:string[]=[];
+  const liq=Number(s.liquidityUsd??0);
+  const buys=Number(s.buys1m??s.buys5m??0), sells=Number(s.sells1m??s.sells5m??0);
+  const ratio=buys/Math.max(1,sells);
+  const pc=Number(s.priceChange1mPct??s.priceChange5mPct??0);
+  const m=c.microCycle;
+  if(liq>0 && liq<Math.max(5000,config.opportunityMinLiquidityUsd*0.55)) reasons.push(`liquidity collapsed to $${Math.round(liq)}`);
+  if(supply.supplyPressure>Math.max(82,config.opportunityMaxSupplyPressure+10)) reasons.push(`supply pressure ${Math.round(supply.supplyPressure)}/100`);
+  if(ratio<config.thesisInvalidationBuySellRatio && pc<-5) reasons.push(`sellers control ${ratio.toFixed(2)}x with ${pc.toFixed(1)}% short-term price action`);
+  if(m?.state==="REVERSING" && m.scoreAcceleration<config.maxCollapseAcceleration) reasons.push(`micro-cycle reversing (${m.scoreAcceleration.toFixed(1)}/min²)`);
+  if(s.onChainRisk?.devRisk==="high"||s.onChainRisk?.holderRisk==="high"||s.onChainRisk?.bundleRisk==="high") reasons.push("hard on-chain risk turned high");
+  if(s.buyRoute===false && s.sellRoute===false && c.snapshots.length>=2) reasons.push("execution route unavailable");
+  return {invalid:reasons.length>0,reasons};
+}

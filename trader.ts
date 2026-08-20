@@ -178,7 +178,7 @@ export class Trader {
       });
       // A larger paper bankroll is for more learning samples, not oversized simulated bets.
       if (!config.liveTrading) {
-        const paperCap = lane === "FLAME" ? config.paperFlameMaxUsd : lane === "ELITE" ? config.paperEliteMaxUsd : config.paperNormalMaxUsd;
+        const paperCap = lane === "FLAME" ? config.paperFlameMaxUsd : lane === "ELITE" ? config.paperEliteMaxUsd : lane === "EARLY" ? config.paperEarlyMaxUsd : config.paperNormalMaxUsd;
         usd = Math.min(usd, paperCap);
       }
       if (usd < config.minPositionUsd) {

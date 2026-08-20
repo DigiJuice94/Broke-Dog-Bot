@@ -104,7 +104,7 @@ class DogBrain {
 
     const improvements:string[]=[];
     if(resolved.length<config.dogBrainMinSamples)improvements.push(`Keep paper mode running until at least ${config.dogBrainMinSamples} resolved samples are collected before trusting weight changes.`);
-    if(missed>0)improvements.push(`Review missed runners before raising the global buy threshold; prefer a controlled FLAME exception when buy pressure + volume acceleration + route quality confirm.`);
+    if(missed>0)improvements.push(`Review missed runners before tightening anything. Prefer the controlled EARLY opportunity lane so Dog can take smaller shots before full NORMAL confirmation while hard safety/route gates stay intact.`);
     if(avoided>missed&&avoided>0)improvements.push(`Do not loosen bundle/route safety broadly — current rejection logic is successfully avoiding more bad moves than runners.`);
     if(closed.length>=3&&wins/closed.length<0.5)improvements.push(`Recent bought-trade win rate is below 50%; require stronger confirmation on the top positive predictor before entry and keep stops tight.`);
     if(closed.length>=3&&wins/closed.length>=0.65)improvements.push(`Recent entries are working; avoid over-tightening. Focus improvements on exits and missed-runner capture instead of making all entries stricter.`);
@@ -133,8 +133,11 @@ class DogBrain {
     }
 
     if(missed>=2){
-      const proposed=Math.max(config.buyScore,config.flameMinScore-2);
-      preciseRecommendations.push(`MISSED RUNNERS / FLAME | Current FLAME_MIN_SCORE=${config.flameMinScore} → TEST ${proposed} (down ${config.flameMinScore-proposed}) while KEEPING FLAME_MIN_CONFIDENCE=${config.flameMinConfidence}, MIN_SOURCES=${config.flameMinSources}, and sell-route safety. Evidence: ${missed} rejected coins later reached the +${config.dogBrainRunnerPct}% runner threshold. Expected upside: capture exceptional early runners without loosening NORMAL buys. Risk: more false-positive FLAME entries. Confidence: ${confidence(rejected.length)} (${rejected.length} rejected samples).`);
+      preciseRecommendations.push(`MISSED RUNNERS / EARLY LANE | ${missed} rejected coins later reached the +${config.dogBrainRunnerPct}% runner threshold. Keep NORMAL BUY_SCORE=${config.buyScore} intact, but evaluate EARLY defaults SCORE>=${config.opportunityMinScore}, RUNNER>=${config.opportunityMinRunnerScore}, LIQUIDITY>=$${config.opportunityMinLiquidityUsd}, and ${config.opportunityRequireSignals} opportunity signals. Expected upside: collect real entry/exit data and participate earlier. Risk: more small false-positive entries; PAPER_EARLY_MAX_USD=$${config.paperEarlyMaxUsd} limits exposure. Confidence: ${confidence(rejected.length)} (${rejected.length} rejected samples).`);
+      const missedRows=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct);
+      const bucket=(r:LearningRecord)=>{const x=(r.decisionReason??"").toLowerCase();if(x.includes("route"))return "route";if(x.includes("safety completeness"))return "safety completeness";if(x.includes("safety"))return "safety";if(x.includes("quality"))return "quality";if(x.includes("liquidity"))return "liquidity";if(x.includes("momentum")||x.includes("decel")||x.includes("anti-fomo"))return "momentum/anti-FOMO";if(x.includes("score"))return "score";if(x.includes("ai pass"))return "AI veto";if(x.includes("stalk invalidated"))return "stalk invalidation";return "other/observation";};
+      const blockers=Object.entries(missedRows.reduce((a,r)=>{const k=bucket(r);a[k]=(a[k]??0)+1;return a;},{} as Record<string,number>)).sort((a,b)=>b[1]-a[1]).slice(0,3);
+      if(blockers.length) preciseRecommendations.push(`MISSED-RUNNER FORENSICS | Top blocking reasons among confirmed missed runners: ${blockers.map(([k,n])=>`${k} ${n}`).join(", ")}. Fix the repeated blocker first instead of globally loosening every safety rule.`);
     }
 
     if(avoided>=2&&avoided>=missed){

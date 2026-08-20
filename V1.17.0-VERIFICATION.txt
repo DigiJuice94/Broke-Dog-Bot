@@ -1,0 +1,29 @@
+BROKE DOG BOT v1.17.0 — VERIFICATION
+
+Base confirmed:
+- BrokeDogBot-v1.16.0-OMO-Intelligence-Budget.zip
+- v1.16 itself states it is based on v1.15 + v1.14 14-Point Correction.
+
+Intended code changes only:
+- Opportunity-first EARLY entry lane
+- EARLY paper sizing cap
+- Stalk invalidation + cooldown to stop wasted rescans/API calls
+- Missed-runner blocker forensics in Dog Brain report
+- New optional environment knobs + deployment notes
+- Correct stale .env-example daily loss text to $50 paper / $50 live
+- Version bump 1.16.0 -> 1.17.0
+
+Preserved:
+- Existing NORMAL / ELITE / FLAME lanes
+- Hard high dev/holder/bundle vetoes
+- Buy/sell route gating
+- Price/data normalization logic
+- OMO FULL/DEGRADED/CORE intelligence handling
+- Persistent Dog Brain memory
+- Paper/live wallet persistence and recovery
+- AI provider failover and AI budget logic
+- Existing exits and loss limits
+- Existing 14-point correction logic
+
+Static TypeScript check:
+- TypeScript compiler reported no v1.17 code/type errors after filtering environment-only missing dependency/type errors caused by node_modules not being available in this build container.

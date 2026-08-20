@@ -1,0 +1,29 @@
+BROKE DOG BOT v1.17.0 — OPPORTUNITY-FIRST RUNNER
+
+BASE: v1.16.0 OMO Intelligence + Budget. All v1.14 14-point corrections, v1.15 thesis/stalking, v1.16 intelligence-budget logic, persistence, wallet recovery, AI failover, route gating, and $50 paper/$50 live daily loss defaults are preserved.
+
+WHAT CHANGED
+- Added EARLY entry lane for meme-coin runners: small entries can happen before every normal confirmation is perfect.
+- EARLY is enabled in PAPER by default and disabled in LIVE by default.
+- Hard safety vetoes remain: high dev/holder/bundle risk cannot use EARLY.
+- Buy/sell route remains mandatory.
+- EARLY still requires baseline safety/data/quality/liquidity plus at least 2 live opportunity signals.
+- Structure reclaim is NOT mandatory for EARLY. AI PASS does NOT veto EARLY paper opportunities.
+- Normal/Elite/Flame lanes are retained unchanged as higher-conviction paths.
+- Added explicit stalk invalidation: broken thesis becomes DROPPED and is cooled down, stopping repeated active scans/API spend.
+- Added PAPER_EARLY_MAX_USD default $35 so uncertain entries collect data with less exposure.
+- Corrected .env example daily loss defaults to PAPER $50 / LIVE $50.
+
+DEFAULT EARLY SIGNALS (need 2)
+1) buyer/seller ratio >= 1.05x
+2) 1m-equivalent volume >= $350
+3) demand breadth >= 35
+4) micro-cycle waking/building/breakout/running OR positive buyer/volume acceleration/structure
+5) positive short-term price action
+6) runner score >= 58
+
+BASELINE EARLY GATES
+Score >= 62 | Runner >= 58 | Data >= 50% | Safety >= 72 | Safety completeness >= 45% | Quality >= 55 | Liquidity >= $15k | Supply <= 72 | Absorption >= 42 | Late-entry risk <= 88 | Age <= 20m | routes available | no hard high-risk flag.
+
+RAILWAY
+No new variable is required; defaults activate automatically in paper mode. Keep LIVE_TRADING=false for this learning run.

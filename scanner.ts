@@ -13,7 +13,7 @@ import { SmartMoneyIntel } from "./smartMoney.ts";
 import { analyzeRisk, fastSafetyCheck, paperRiskGate, normalRiskGate, flameRiskGate } from "./risk.ts";
 import { dogBrain } from "./dogBrain.ts";
 import { aiBrain } from "./aiBrain.ts";
-import { buildDogThesis } from "./thesis.ts";
+import { buildDogThesis, evaluateStalkInvalidation } from "./thesis.ts";
 
 export class Scanner {
   readonly candidates = new Map<string, Candidate>();
@@ -80,7 +80,7 @@ export class Scanner {
       // again. If DEX/Birdeye rediscover it after a cooldown and there is room in
       // the watch pool, start a fresh observation window instead of leaving it
       // permanently DROPPED.
-      if (existing.state === "DROPPED" && this.activeCount() < config.maxActiveCandidates) {
+      if (existing.state === "DROPPED" && this.activeCount() < config.maxActiveCandidates && now >= (existing.invalidatedUntil??0)) {
         const droppedAt = existing.lastDroppedAt ?? previousSeen;
         const isTrending = ["fomo","axiom","mobula-axiom-volume","mobula-axiom-price","birdeye-trending","dex-momentum"].includes(t.source);
         const cooldown = isTrending ? config.trendingRewatchCooldownMs : (this.activeCount() < config.minActiveCandidates ? Math.min(config.rewatchCooldownMs, 15_000) : config.rewatchCooldownMs);
@@ -317,7 +317,43 @@ export class Scanner {
         : young ? safetyScore>=config.youngMinSafetyScore : true;
       const componentGates=safetyScore>=config.normalMinSafetyScore && safetyComplete>=config.normalMinSafetyCompleteness && qualityScore>=config.normalMinQualityScore && liq>=config.normalMinLiquidityUsd;
       const microFlameOK=!config.microCycleEnabled || !micro || (micro.score>=config.microCycleFlameMinScore && micro.runnerProbability>=config.microCycleFlameMinRunnerProbability && !micro.antiFomoBlocked && micro.scoreAcceleration>config.maxCollapseAcceleration);
+      const requiredObservationMs=(!config.liveTrading&&config.paperFastSafety)?config.paperMinObservationMs:config.minObservationMs;
+      const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?learnedThresholds.paperConfidence:learnedThresholds.confidence;
       const antiFomoBlocked=!!(config.microCycleEnabled && micro?.antiFomoBlocked);
+      if(config.thesisEnabled){const prior=c.thesis;c.thesis=buildDogThesis(c);c.thesisHistory=[...(c.thesisHistory??[]),c.thesis].slice(-12);if(prior?.decision!==c.thesis.decision)log.info(`[🐶 THESIS] ${c.token.name} ($${c.token.symbol}) | ${prior?.decision??"NEW"} → ${c.thesis.decision} | confidence ${c.thesis.confidence.toFixed(0)} | absorption ${c.thesis.supply.absorptionScore.toFixed(0)} | supply ${c.thesis.supply.supplyPressure.toFixed(0)}`);}
+
+      // v1.17 OPPORTUNITY-FIRST lane: meme runners often move before every signal can "prove" itself.
+      // Hard danger, route and basic liquidity/safety still gate entries, but normal-score perfection,
+      // full structure confirmation and AI approval are NOT required for a small early paper entry.
+      const opportunityLaneEnabled=config.opportunityFirstEnabled && ((!config.liveTrading&&config.opportunityEarlyPaperEnabled)||(config.liveTrading&&config.opportunityEarlyLiveEnabled));
+      const opportunitySupply=c.thesis?.supply ?? undefined;
+      const opportunitySignals=[
+        buySellRatio>=config.opportunityMinBuySellRatio,
+        volume1m>=config.opportunityMinVolume1mUsd,
+        Number(c.demandBreadthScore??0)>=config.opportunityMinDemandBreadth,
+        !!micro && (micro.state==="WAKING"||micro.state==="BUILDING"||micro.state==="BREAKOUT"||micro.state==="RUNNING"||micro.buyerAccelerationPct>0||micro.volumeAccelerationPct>0||micro.structureBreak||micro.higherLow),
+        Number(snap.priceChange1mPct??snap.priceChange5mPct??0)>0,
+        Number(c.runnerScore??0)>=config.opportunityMinRunnerScore
+      ].filter(Boolean).length;
+      const opportunityHardRisk= snap.onChainRisk?.devRisk==="high" || snap.onChainRisk?.holderRisk==="high" || snap.onChainRisk?.bundleRisk==="high";
+      const opportunityEntry=opportunityLaneEnabled
+        && age>=Math.min(requiredObservationMs,config.paperMinObservationMs)
+        && tokenAgeMin<=config.opportunityMaxAgeMin
+        && c.score>=config.opportunityMinScore
+        && Number(c.runnerScore??0)>=config.opportunityMinRunnerScore
+        && c.dataConfidence>=config.opportunityMinDataConfidence
+        && routesOK
+        && entryRisk.ok
+        && !opportunityHardRisk
+        && safetyScore>=config.opportunityMinSafetyScore
+        && safetyComplete>=config.opportunityMinSafetyCompleteness
+        && qualityScore>=config.opportunityMinQualityScore
+        && liq>=config.opportunityMinLiquidityUsd
+        && (!opportunitySupply || opportunitySupply.supplyPressure<=config.opportunityMaxSupplyPressure)
+        && (!opportunitySupply || opportunitySupply.absorptionScore>=config.opportunityMinAbsorption)
+        && opportunitySignals>=config.opportunityRequireSignals
+        && (!micro || micro.lateEntryRisk<=config.opportunityMaxLateEntryRisk)
+        && (!micro || micro.scoreAcceleration>config.maxCollapseAcceleration);
       const flame=config.flameEnabled
         && c.score>=config.flameMinScore
         && (c.runnerScore??0)>=config.flameMinRunnerScore
@@ -333,8 +369,6 @@ export class Scanner {
         && (veryYoung ? liq>=config.veryYoungMinLiquidityUsd : true)
         && (c.intelligence?.mode!=="CORE" || (c.dataConfidence>=90 && safetyComplete>=85 && liq>=Math.max(config.veryYoungMinLiquidityUsd,50000)))
         && microFlameOK;
-      const requiredObservationMs=(!config.liveTrading&&config.paperFastSafety)?config.paperMinObservationMs:config.minObservationMs;
-      const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?learnedThresholds.paperConfidence:learnedThresholds.confidence;
       const aiEligibleBase=age>=requiredObservationMs
         && c.score>=config.aiCoinMinScore
         && c.score<=config.aiCoinMaxScore
@@ -352,7 +386,6 @@ export class Scanner {
       const aiPromote=c.score<learnedThresholds.buyScore
         && !!aiDecision?.ok && aiDecision.verdict==="BUY" && aiDecision.confidence>=config.aiCoinPromoteConfidence;
       const scoreApproved=c.score>=learnedThresholds.buyScore || aiPromote;
-      if(config.thesisEnabled){const prior=c.thesis;c.thesis=buildDogThesis(c);c.thesisHistory=[...(c.thesisHistory??[]),c.thesis].slice(-12);if(prior?.decision!==c.thesis.decision)log.info(`[🐶 THESIS] ${c.token.name} ($${c.token.symbol}) | ${prior?.decision??"NEW"} → ${c.thesis.decision} | confidence ${c.thesis.confidence.toFixed(0)} | absorption ${c.thesis.supply.absorptionScore.toFixed(0)} | supply ${c.thesis.supply.supplyPressure.toFixed(0)}`);}
       const thesisBuy=!config.thesisEnabled||c.thesis?.decision==="BUY";
       const normalEntry=age>=requiredObservationMs
         && scoreApproved
@@ -373,10 +406,20 @@ export class Scanner {
         c.state="READY"; c.entryLane="FLAME";
         c.decisionReason=`🔥 FLAME AUTO BUY | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | micro ${Math.round(micro?.score??0)} | RP ${Math.round(micro?.runnerProbability??0)} | B/S ${buySellRatio.toFixed(1)}x | vol $${Math.round(volume1m)} | ${flameRisk.why}`;
         log.info(`[🔥 FLAME] ${c.token.name} ($${c.token.symbol}) | AUTO BUY | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Quality:${Math.round(c.qualityScore??0)} Data:${Math.round(c.dataConfidence)}% B/S:${buySellRatio.toFixed(1)}x Vol:$${Math.round(volume1m)} Sources:${sourceCount}`);
+      } else if(opportunityEntry){
+        c.state="READY"; c.entryLane="EARLY";
+        c.decisionReason=`⚡ EARLY RUNNER BUY | opportunity-first | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | signals ${opportunitySignals}/${6} | B/S ${buySellRatio.toFixed(2)}x | vol $${Math.round(volume1m)} | breadth ${Math.round(c.demandBreadthScore??0)} | liq $${Math.round(liq)} | hard safety clear`;
+        log.info(`[⚡ EARLY RUNNER] ${c.token.name} ($${c.token.symbol}) | BUY BEFORE PERFECT | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Signals:${opportunitySignals}/6 Safety:${Math.round(safetyScore)}/${Math.round(safetyComplete)} Quality:${Math.round(qualityScore)} Liq:$${Math.round(liq)} B/S:${buySellRatio.toFixed(2)}x`);
       } else if(normalEntry){
         c.state="READY"; c.entryLane=c.score>=config.eliteScore?"ELITE":"NORMAL";
         const aiNote=aiDecision?.ok?` | 🤖 AI ${aiDecision.verdict} ${aiDecision.confidence}%${aiPromote?" PROMOTED":""}`:aiDecision?.budgetReason?` | 🤖 AI FALLBACK (${aiDecision.budgetReason})`:"";
         c.decisionReason=`${c.entryLane} APPROVED | score ${Math.round(c.score)} | quality ${Math.round(c.qualityScore??0)} | runner ${Math.round(c.runnerScore??0)} | micro ${Math.round(micro?.score??0)} RP ${Math.round(micro?.runnerProbability??0)} late ${Math.round(micro?.lateEntryRisk??0)} | ${entryRisk.why}${aiNote}`;
+      } else if(config.thesisEnabled && c.state==="STALKING" && evaluateStalkInvalidation(c).invalid){
+        const invalid=evaluateStalkInvalidation(c);
+        c.state="DROPPED"; c.lastDroppedAt=Date.now(); c.invalidatedUntil=Date.now()+config.opportunityStalkCooldownMs;
+        c.decisionReason=`❌ STALK INVALIDATED | ${invalid.reasons.join("; ")} | abandoned to save scans/API`;
+        dogBrain.markDecision(c,"REJECTED");
+        log.info(`[❌ STALK INVALIDATED] ${c.token.name} ($${c.token.symbol}) | ${invalid.reasons.join("; ")} | no more active scans`);
       } else if(config.thesisEnabled && c.thesis?.decision==="STALK" && (Date.now()-(c.stalkingSince??Date.now()))<config.thesisMaxStalkMs){
         c.state="STALKING";c.stalkingSince??=Date.now();
         c.decisionReason=`🐕 STALKING | thesis ${c.thesis.confidence.toFixed(0)}% | absorption ${c.thesis.supply.absorptionScore.toFixed(0)} | supply ${c.thesis.supply.supplyPressure.toFixed(0)} | WAIT: ${c.thesis.entryTriggers.slice(0,2).join("; ")}`;
