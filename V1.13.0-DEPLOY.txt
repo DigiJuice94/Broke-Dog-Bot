@@ -1,0 +1,17 @@
+BROKE DOG BOT v1.13.0 — AUTONOMOUS RUNNER BRAIN + MEMORY LOCK
+
+1. Deploy this package over the current app.
+2. KEEP the existing Railway persistent Volume attached.
+3. Confirm Railway exposes RAILWAY_VOLUME_MOUNT_PATH, or set DOG_BRAIN_DATA_DIR to the mount path (example: /data).
+4. Keep DOG_BRAIN_REQUIRE_PERSISTENCE=true. The bot will refuse to run if memory would be ephemeral.
+5. DOG_BRAIN_AUTONOMOUS=true enables automatic small strategy adaptations.
+6. Do NOT change PAPER_NORMAL_MAX_USD / PAPER_ELITE_MAX_USD / PAPER_FLAME_MAX_USD unless you personally want different trade amounts. Dog Brain cannot alter those values.
+7. On boot look for: 🧠✅ MEMORY REMEMBERED
+   If you instead see NO PREVIOUS MEMORY FOUND, stop and verify the same persistent volume/path before letting it collect new data.
+
+New behavior:
+- Standard exit plan remains in place.
+- Dog Brain classifies open trades STANDARD / STRONG_RUNNER / MONSTER_RUNNER.
+- Strong/monster runner classifications can raise TP, widen trailing room, and extend max hold time while hard/liquidity emergency exits remain active.
+- Dog Brain automatically learns runner patience from post-exit continuation vs collapse.
+- Adaptive entry/soft-stop changes are bounded and saved in persistent memory.

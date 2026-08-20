@@ -11,20 +11,23 @@ import { EmailReporter } from "./reporting.ts";
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
 async function main(){
+  dogBrain.boot();
   const wallet=new WalletService(),birdeye=new Birdeye(),jupiter=new Jupiter(wallet),trader=new Trader(wallet,jupiter);
   const scanner=new Scanner(birdeye,jupiter,c=>trader.buy(c));
   const emailReporter=new EmailReporter(trader);
-  log.info("🐶 BROKE DOG BOT v1.10.2 — CREDIT-SMART AI BUY GATE");
+  log.info("🐶 BROKE DOG BOT v1.13.0 — AUTONOMOUS RUNNER BRAIN + MEMORY LOCK");
   log.info(`Mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER TRADING"}`); log.info(`Wallet: ${wallet.address??"NOT CONFIGURED"}`);
-  log.info(`Entries: NORMAL ≥${config.buyScore} | ELITE ≥${config.eliteScore} | 🔥 FLAME ≥${config.flameMinScore} + early-runner pressure | observation ${(!config.liveTrading&&config.paperFastSafety?config.paperMinObservationMs:config.minObservationMs)/1000}-${config.maxObservationMs/1000}s`);
+  const adaptive=dogBrain.adaptiveSnapshot();
+  log.info(`Entries: NORMAL base ≥${config.buyScore} / adaptive ≥${adaptive.buyScore} | ELITE ≥${config.eliteScore} | 🔥 FLAME ≥${config.flameMinScore} + early-runner pressure | observation ${(!config.liveTrading&&config.paperFastSafety?config.paperMinObservationMs:config.minObservationMs)/1000}-${config.maxObservationMs/1000}s`);
   if(!config.liveTrading&&config.paperFastSafety)log.info(`🛡️ PAPER FAST SAFETY: ONE gate | timeout ${config.safetyTimeoutMs}ms | cache ${Math.round(config.safetyCacheMs/1000)}s | hard veto only on explicit danger | route/deep enrichment do not block paper entries`);
   log.info(`Discovery rotation: active cap ${config.maxActiveCandidates} | fresh target ${config.freshCandidatesPerCycle}/cycle | rotate stale score <${config.staleEvictScore} after ${Math.round(config.staleEvictAgeMs/1000)}s | Mobula ranked pool ${config.mobulaTrendingLimit}`);
   log.info(`Discovery: Social watchlist + Mobula/Axiom-style + Birdeye + DEX/FOMO | v8.3-style Helius launch/holder safety added`);
   log.info(`Social: ${config.xBearerToken?"OPTIONAL X CONFIGURED":"OFF"} | discovery/confirmation only — never a mandatory normal-buy trigger`);
-  log.info(`Exits: Jupiter executable P/L | normal TP +${config.takeProfitPct}% / hard -${config.hardStopLossPct}% | 🔥 TP +${config.flameTakeProfitPct}% / stop -${config.flameStopLossPct}% | 🛡️ peak ratchet arms +${config.peakProfitArmPct}% → floor +${config.peakProfitFloorPct}% / exit at ${config.peakGivebackExitPct}% peak giveback`);
+  log.info(`Exits: ADAPTIVE runner-aware | base normal TP +${config.takeProfitPct}% / adaptive hard -${adaptive.hardStop}% / soft -${adaptive.softStop}% | 🔥 TP +${config.flameTakeProfitPct}% / stop -${config.flameStopLossPct}% | 🛡️ peak ratchet arms +${config.peakProfitArmPct}% → floor +${config.peakProfitFloorPct}% / exit at ${config.peakGivebackExitPct}% peak giveback`);
   log.info(`Mobula Axiom-style: ${config.mobulaApiKey?"ON":"OFF — add MOBULA_API_KEY"} | interval ${Math.round(config.mobulaTrendingIntervalMs/1000)}s`);
   log.info(`Birdeye: new ${Math.round(config.birdeyeNewIntervalMs/60000)}m | trending ${Math.round(config.birdeyeTrendingIntervalMs/60000)}m | deep top ${config.birdeyeDeepCandidates} at score ≥${config.birdeyeDeepMinScore} | CU budget ${config.birdeyeCuBudgetPerHour}/hr`);
-  log.info(`Positions: 2 normal slots + reserved 3rd slot for score ${config.thirdPositionScore}+ | max allocation ${config.maxPositionWalletPct}% | paper daily loss brake $${config.paperMaxDailyLossUsd} | live daily loss brake $${config.liveMaxDailyLossUsd}`);
+  log.info(`Positions: 2 normal slots + reserved 3rd slot for score ${config.thirdPositionScore}+ | trade AMOUNTS remain configuration-locked (AI cannot change sizing) | paper daily loss brake $${config.paperMaxDailyLossUsd} | live daily loss brake $${config.liveMaxDailyLossUsd}`);
+  log.info(`🧠🔧 Autonomous learning: ${config.dogBrainAutonomous?"ON":"OFF"} | runner patience ${adaptive.runnerPatience.toFixed(1)} | adaptations ${adaptive.adaptations} | memory persistence required:${config.dogBrainRequirePersistence?"YES":"NO"}`);
   if(!config.liveTrading)log.info(`💰🐶 Paper wallet: starts $${config.paperStartBalanceUsd.toFixed(2)} | sizing caps NORMAL $${config.paperNormalMaxUsd} / ELITE $${config.paperEliteMaxUsd} / FLAME $${config.paperFlameMaxUsd} | simulated costs ${(config.paperTrackFees?config.paperFeePct:0)+(config.paperTrackSlippage?config.paperSlippagePct:0)}% | persistent ledger ${config.paperLedgerFile}`);
   log.info(`🧠 ${dogBrain.startupText()} | checkpoints 1m/5m/15m/30m/1h | max learned score ±${config.dogBrainMaxScoreAdjustment}`);
   log.info(`🤖 ${aiBrain.startupText()} | emails every ${Math.round(config.reportIntervalMs/60000)}m | hard safety always wins`);

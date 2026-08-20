@@ -116,7 +116,7 @@ export class Trader {
   private positionsArrayPaperCost(){ let total=0; for(const p of this.positions.values())if(p.paper)total+=p.entryUsd; return total; }
   private entryAnalysis(c:Candidate):TradeEntryAnalysis{
     const s=c.snapshots.at(-1)!; const risk=s.onChainRisk; const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;
-    return {score:c.score,runnerScore:c.runnerScore,qualityScore:c.qualityScore,confidence:c.dataConfidence,marketScore:c.marketScore,socialScore:c.socialScore,safetyScore:c.safetyScore,microCycle:c.microCycle,liquidityUsd:s.liquidityUsd,marketCapUsd:s.marketCapUsd,holderCount:s.holderCount,uniqueWallet1m:s.uniqueWallet1m,volume1mUsd:s.volume1mUsd,volume5mUsd:s.volume5mUsd,buys1m:s.buys1m,sells1m:s.sells1m,buyVolume1mUsd:s.buyVolume1mUsd,sellVolume1mUsd:s.sellVolume1mUsd,priceChange1mPct:s.priceChange1mPct,priceChange5mPct:s.priceChange5mPct,top1Pct:risk?.top1Pct,top5Pct:risk?.top5Pct,top10Pct:risk?.top10Pct??s.top10HolderPct,bundleRisk:risk?.bundleRisk,holderRisk:risk?.holderRisk,devRisk:risk?.devRisk,linkedSupplyPct:risk?.estimatedLinkedSupplyPct,smartMoneyScore:s.smartMoney?.score,socialAccounts:s.social?.keyAccounts??[],dominantMeta:s.social?.dominantMeta??[],metaRunner:c.metaRunner,sources:[...c.sources],tokenAgeMin:age,routeQuality:s.routeQuality,buyRoute:s.buyRoute,sellRoute:s.sellRoute};
+    return {score:c.score,runnerScore:c.runnerScore,qualityScore:c.qualityScore,confidence:c.dataConfidence,marketScore:c.marketScore,socialScore:c.socialScore,safetyScore:c.safetyScore,microCycle:c.microCycle,liquidityUsd:s.liquidityUsd,marketCapUsd:s.marketCapUsd,holderCount:s.holderCount,uniqueWallet1m:s.uniqueWallet1m,volume1mUsd:s.volume1mUsd,volume5mUsd:s.volume5mUsd,buys1m:s.buys1m,sells1m:s.sells1m,buyVolume1mUsd:s.buyVolume1mUsd,sellVolume1mUsd:s.sellVolume1mUsd,priceChange1mPct:s.priceChange1mPct,priceChange5mPct:s.priceChange5mPct,top1Pct:risk?.top1Pct,top5Pct:risk?.top5Pct,top10Pct:risk?.top10Pct??s.top10HolderPct,bundleRisk:risk?.bundleRisk,holderRisk:risk?.holderRisk,devRisk:risk?.devRisk,linkedSupplyPct:risk?.estimatedLinkedSupplyPct,smartMoneyScore:s.smartMoney?.score,socialAccounts:s.social?.keyAccounts??[],dominantMeta:s.social?.dominantMeta??[],metaRunner:c.metaRunner,sources:[...c.sources],tokenAgeMin:age,routeQuality:s.routeQuality,buyRoute:s.buyRoute,sellRoute:s.sellRoute,routeQuotedAt:s.routeQuotedAt,routeRoundTripPct:s.routeRoundTripPct,routeRouter:s.routeRouter,routeMode:s.routeMode,routeFeeBps:s.routeFeeBps,sourceFirstSeenAt:Object.fromEntries(Object.entries(c.sourceFirstSeenAt??{}).map(([k,v])=>[k,Number(v)])),firstBuyScoreAt:c.firstBuyScoreAt,decisionAt:Date.now(),missingFields:[s.routeQuality==null?"routeQuality":null,s.onChainRisk==null?"onChainRisk":null,s.onChainRisk?.top10Pct==null&&s.top10HolderPct==null?"top10HolderPct":null,s.bundleStatus==="unknown"||s.bundleStatus==="skipped"?"bundleSignal":null].filter(Boolean) as string[]};
   }
   private appendPaperLedger(entry:any){
     try{ migrateLegacyFile(config.paperLedgerFile,"broke-dog-paper-ledger.json"); let ledger:any[]=readJsonRecovered<any[]>(config.paperLedgerFile)??[]; if(!Array.isArray(ledger))ledger=[]; ledger.push(entry); writeJsonAtomic(config.paperLedgerFile,ledger); }
@@ -184,7 +184,7 @@ export class Trader {
         this.positions.set(c.token.address, {
           mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals:c.token.decimals || 6,
           tokenAmountRaw:0n,entrySolLamports:lamports,entryUsd:usd,entryPriceUsd:entryPrice,paperEntryCostUsd:usd,
-          openedAt:Date.now(),highPriceUsd:entryPrice,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
+          openedAt:Date.now(),highPriceUsd:entryPrice,priceHistory:[{at:Date.now(),priceUsd:entryPrice,pnlPct:0}],scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
         });
         c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
         log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥🐶 PAPER FLAME BUY":"🧪🐶 PAPER BUY",reason:`${lane} | 💵 Invested:$${usd.toFixed(2)} | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | 📍 Entry:$${entryPrice.toPrecision(6)} | CA:${c.token.address}` });
@@ -205,7 +205,7 @@ export class Trader {
       const actualEntryPrice = snap.priceUsd ?? (usd / (Number(raw) / 10 ** decimals));
       this.positions.set(c.token.address, {
         mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals,tokenAmountRaw:raw,
-        entrySolLamports:result.inRaw,entryUsd:usd,entryPriceUsd:actualEntryPrice,openedAt:Date.now(),highPriceUsd:actualEntryPrice,
+        entrySolLamports:result.inRaw,entryUsd:usd,entryPriceUsd:actualEntryPrice,openedAt:Date.now(),highPriceUsd:actualEntryPrice,priceHistory:[{at:Date.now(),priceUsd:actualEntryPrice,pnlPct:0}],
         signature:result.signature,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:false,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
       });
       c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
@@ -428,6 +428,7 @@ export class Trader {
         if (!price) continue;
         p.highPriceUsd = Math.max(p.highPriceUsd, price);
         const chartPnl = ((price-p.entryPriceUsd)/p.entryPriceUsd)*100;
+        p.priceHistory ??= []; p.priceHistory.push({at:Date.now(),priceUsd:price,pnlPct:chartPnl}); if(p.priceHistory.length>240)p.priceHistory=p.priceHistory.slice(-240);
         const chartDrawdown = ((price-p.highPriceUsd)/p.highPriceUsd)*100;
         const ageMin = (Date.now()-p.openedAt)/60000;
         const buys=s?.buys1m??s?.buys5m??0, sells=s?.sells1m??s?.sells5m??0;
@@ -435,22 +436,28 @@ export class Trader {
         const momentumPrice=s?.priceChange1mPct??s?.priceChange5mPct??0;
         const momentumStrong=momentumRatio>=config.strongMomentumBuySellRatio && momentumPrice>=config.strongMomentumMinPrice5mPct;
         const isFlame=p.lane==="FLAME";
-        const takeProfit=isFlame?config.flameTakeProfitPct:config.takeProfitPct;
-        const hardStop=isFlame?config.flameStopLossPct:config.hardStopLossPct;
-        const protectArm=isFlame?config.flameProfitProtectArmPct:config.profitProtectArmPct;
-        const trail=isFlame?config.flameTrailingStopPct:config.trailingStopPct;
+        const learnedThresholds=dogBrain.entryThresholds();
         const chartPeakPnl=((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100;
+        const runnerPlan=dogBrain.runnerExitPlan(p,{pnlPct:chartPnl,peakPnlPct:chartPeakPnl,buySellRatio:momentumRatio,priceMomentumPct:momentumPrice});
+        const takeProfit=runnerPlan.tp;
+        const hardStop=isFlame?Math.max(8,Math.min(16,config.flameStopLossPct+learnedThresholds.hardStop-config.hardStopLossPct)):learnedThresholds.hardStop;
+        const softStop=learnedThresholds.softStop;
+        const protectArm=runnerPlan.protect;
+        const trail=runnerPlan.trail;
+        const maxAge=runnerPlan.maxAge;
+        const peakGivebackExit=runnerPlan.giveback;
         const chartPeakGivebackPct=chartPeakPnl>0?Math.max(0,(chartPeakPnl-chartPnl)/chartPeakPnl*100):0;
+        if(p.runnerMode!==runnerPlan.mode || (Date.now()-(p.runnerLastLogAt??0)>60000&&runnerPlan.mode!=="STANDARD")){p.runnerMode=runnerPlan.mode;p.runnerConfidence=runnerPlan.confidence;p.runnerLastLogAt=Date.now();log.info(`🧠🏃 RUNNER MODE | ${p.name} ($${p.symbol}) | ${runnerPlan.mode} ${runnerPlan.confidence.toFixed(0)}% | TP +${runnerPlan.tp.toFixed(0)}% | trail ${runnerPlan.trail.toFixed(0)}pt | max age ${runnerPlan.maxAge.toFixed(0)}m | B/S ${momentumRatio.toFixed(2)}x`);}
 
         if (p.paper) {
           if (shouldLogStatus) this.logCurrentTrade(p, price, index, positions.length);
           if (chartPnl >= takeProfit) await this.sell(p, `TAKE PROFIT ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -hardStop) await this.sell(p, `HARD STOP ${chartPnl.toFixed(1)}%`, price);
-          else if (chartPnl <= -config.softStopLossPct && !momentumStrong) await this.sell(p, `MOMENTUM STOP ${chartPnl.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x`, price);
+          else if (chartPnl <= -softStop && !momentumStrong) await this.sell(p, `MOMENTUM STOP ${chartPnl.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x`, price);
           else if (chartPeakPnl >= config.peakProfitArmPct && chartPnl <= config.peakProfitFloorPct) await this.sell(p, `PEAK FLOOR | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | floor +${config.peakProfitFloorPct}%`, price);
-          else if (chartPeakPnl >= config.peakProfitArmPct && chartPeakGivebackPct >= config.peakGivebackExitPct) await this.sell(p, `PEAK GIVEBACK | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | gave back ${chartPeakGivebackPct.toFixed(0)}%`, price);
+          else if (chartPeakPnl >= config.peakProfitArmPct && chartPeakGivebackPct >= peakGivebackExit) await this.sell(p, `PEAK GIVEBACK | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | gave back ${chartPeakGivebackPct.toFixed(0)}%`, price);
           else if (chartPnl >= protectArm && chartDrawdown <= -trail) await this.sell(p, `PROFIT PROTECT ${chartDrawdown.toFixed(1)}% from high`, price);
-          else if (ageMin >= config.maxPositionAgeMin) await this.sell(p, `TIME EXIT ${ageMin.toFixed(1)}m`, price);
+          else if (ageMin >= maxAge) await this.sell(p, `TIME EXIT ${ageMin.toFixed(1)}m`, price);
           continue;
         }
 
@@ -487,21 +494,21 @@ export class Trader {
           const rug = executable.pnlPct <= -config.rugExitPct ? "RUG/LIQUIDITY " : "";
           await this.sell(p, `${rug}HARD STOP REAL ${executable.pnlPct.toFixed(1)}%`, price, executable);
         }
-        else if (executable.pnlPct <= -config.softStopLossPct && !momentumStrong) {
+        else if (executable.pnlPct <= -softStop && !momentumStrong) {
           await this.sell(p, `MOMENTUM STOP REAL ${executable.pnlPct.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x | price momentum ${momentumPrice.toFixed(1)}%`, price, executable);
         }
         // 5) Peak-profit ratchet: once +10% real profit has existed, protect a +2% floor and exit after 70% of the peak gain is surrendered.
         else if (peakExecutable >= config.peakProfitArmPct && executable.pnlPct <= config.peakProfitFloorPct) {
           await this.sell(p, `PEAK FLOOR REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | floor +${config.peakProfitFloorPct}%`, price, executable);
         }
-        else if (peakExecutable >= config.peakProfitArmPct && executablePeakGivebackPct >= config.peakGivebackExitPct) {
+        else if (peakExecutable >= config.peakProfitArmPct && executablePeakGivebackPct >= peakGivebackExit) {
           await this.sell(p, `PEAK GIVEBACK REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | gave back ${executablePeakGivebackPct.toFixed(0)}%`, price, executable);
         }
         // 6) Preserve the existing lane-specific point trail as a second profit-protection layer.
         else if (peakExecutable >= protectArm && executableDrawdown >= trail) {
           await this.sell(p, `PROFIT PROTECT | REAL peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}%`, price, executable);
         }
-        else if (ageMin >= config.maxPositionAgeMin) {
+        else if (ageMin >= maxAge) {
           await this.sell(p, `TIME EXIT ${ageMin.toFixed(1)}m | REAL ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}%`, price, executable);
         }
       } catch (e) { log.warn(`[POSITION ERROR] ${p.name}: ${e instanceof Error ? e.message : String(e)}`); }

@@ -1,0 +1,27 @@
+Broke Dog Bot v1.12.0 — Evidence + AI Failover (CORRECTED BASE)
+
+BASE VERSION
+- Built directly from v1.11.1 Dual Daily Loss Fix.
+- v1.11.1 daily-loss logic is preserved unchanged: PAPER_MAX_DAILY_LOSS_USD=50, LIVE_MAX_DAILY_LOSS_USD=7, with MAX_DAILY_LOSS_USD=7 as the legacy/live fallback.
+- No trading threshold, exit threshold, position size, or daily-loss behavior was intentionally changed in this upgrade.
+
+NEW IN v1.12.0
+- External AI failover order: Groq -> Gemini -> OpenRouter -> deterministic Dog Brain fallback.
+- AI failures never block normal deterministic trading or Dog Brain learning.
+- Rejected-coin / evidence collection expanded with source-first-seen timestamps, first buy-threshold time, route quote metadata, missing-field audit, and richer entry/exit evidence.
+- Position price history retained for exit counterfactual analysis.
+- Jupiter route telemetry expanded for route-quality / execution learning.
+
+RAILWAY AI VARIABLES
+GROQ_API_KEY=your_key
+GROQ_MODEL=openai/gpt-oss-20b
+GEMINI_API_KEY=your_key
+GEMINI_MODEL=gemini-3-flash-preview
+OPENROUTER_API_KEY=your_existing_key
+AI_BRAIN_ENABLED=true
+
+OPTIONAL USAGE CONTROLS
+AI_COIN_MAX_PER_DAY=30
+AI_TOTAL_MAX_PER_DAY=44
+
+Keep existing Railway variables unless you intentionally want to change behavior.

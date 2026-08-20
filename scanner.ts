@@ -59,7 +59,7 @@ export class Scanner {
     const existing = this.candidates.get(t.address);
     if (existing) {
       const previousSeen = existing.lastSeenAt;
-      existing.sources.add(t.source); existing.lastSeenAt=now;
+      existing.sources.add(t.source); existing.sourceFirstSeenAt ??= {}; if(existing.sourceFirstSeenAt[t.source]==null) existing.sourceFirstSeenAt[t.source]=now; existing.lastSeenAt=now;
       if (t.rank != null) {
         const oldRank=existing.trendingRanks[t.source];
         existing.previousTrendingRanks ??= {};
@@ -100,7 +100,7 @@ export class Scanner {
     if (this.activeCount()>=config.maxActiveCandidates) {
       if(!forceFresh || !this.evictForFresh(now) || this.activeCount()>=config.maxActiveCandidates) return "blocked";
     }
-    this.candidates.set(t.address,{token:t,firstSeenAt:now,lastSeenAt:now,sources:new Set([t.source]),
+    this.candidates.set(t.address,{token:t,firstSeenAt:now,lastSeenAt:now,sources:new Set([t.source]),sourceFirstSeenAt:{[t.source]:now},
       trendingRanks:t.rank==null?{}:{[t.source]:t.rank},previousTrendingRanks:{},rankMovement:{},snapshots:[],score:0,dataConfidence:0,state:"WATCHING",collecting:false,watchCycles:1});
     return "new";
   }
@@ -202,7 +202,7 @@ export class Scanner {
 
       const marketPromise=doBirdeye?this.birdeye.snapshot(c.token.address,seed):Promise.resolve(seed);
       const bundlePromise=doBundle?bundleRisk(c.token.address):Promise.resolve({risk:undefined,status:"unknown" as const});
-      const routePromise=doRoute?this.jupiter.canBuyAndSell(c.token.address):Promise.resolve({buy:false,sell:false,quality:undefined});
+      const routePromise=doRoute?this.jupiter.canBuyAndSell(c.token.address):Promise.resolve({buy:false,sell:false,quality:undefined,quotedAt:Date.now(),roundTripPct:undefined,router:undefined,mode:undefined,feeBps:undefined});
       const holderPromise=doHolder?this.birdeye.holderStats(c.token.address):Promise.resolve({});
       const doSmart=index<config.smartMoneyCandidates && c.score>=config.smartMoneyMinScore;
       const smartPromise=doSmart?this.smartMoney.inspect(c.token.address):Promise.resolve({checked:false,smartTraders:0,snipers:0,insiders:0,bundlers:0,devs:0,score:0});
@@ -216,16 +216,16 @@ export class Scanner {
 
       const snap:Snapshot={at:Date.now(),...market,...holder, social, smartMoney,onChainRisk,
         bundleRisk:bundle.risk,bundleStatus:doBundle?(bundle.status==="ok"?"ok":bundle.status==="error"?"error":"unknown"):"skipped",
-        buyRoute:route.buy,sellRoute:route.sell,routeQuality:route.quality};
+        buyRoute:route.buy,sellRoute:route.sell,routeQuality:route.quality,routeQuotedAt:route.quotedAt,routeRoundTripPct:route.roundTripPct,routeRouter:route.router,routeMode:route.mode,routeFeeBps:route.feeBps};
       c.snapshots.push(snap); if(c.snapshots.length>12)c.snapshots.shift();
-      let scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; dogBrain.observe(c);
+      let scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; let learnedThresholds=dogBrain.entryThresholds(); if(c.score>=learnedThresholds.buyScore&&c.firstBuyScoreAt==null)c.firstBuyScoreAt=Date.now(); dogBrain.observe(c);
 
       // Same-cycle finalist escalation: if the NEW data collected above pushes a
       // candidate across the buy threshold, do not wait for the next scanner tick.
       // Immediately fetch any missing high-value checks, then recalculate the score
       // and READY state using those results.
       let finalBirdeye=doBirdeye, finalHolder=doHolder, finalBundle=doBundle, finalRoute=doRoute;
-      if(c.score>=config.buyScore){
+      if(c.score>=learnedThresholds.buyScore){
         log.info(`[FINALIST NOW] ${c.token.name} ($${c.token.symbol}) | fresh score ${Math.round(c.score)}/100 crossed buy threshold — verifying now`);
 
         const tasks:Promise<void>[]=[];
@@ -235,7 +235,7 @@ export class Scanner {
         };
         if(!finalRoute){
           finalRoute=true;
-          queue(this.jupiter.canBuyAndSell(c.token.address).then(r=>{snap.buyRoute=r.buy;snap.sellRoute=r.sell;snap.routeQuality=r.quality;}));
+          queue(this.jupiter.canBuyAndSell(c.token.address).then(r=>{snap.buyRoute=r.buy;snap.sellRoute=r.sell;snap.routeQuality=r.quality;snap.routeQuotedAt=r.quotedAt;snap.routeRoundTripPct=r.roundTripPct;snap.routeRouter=r.router;snap.routeMode=r.mode;snap.routeFeeBps=r.feeBps;}));
         }
         if(!finalBirdeye && this.birdeye.isCuAvailable()){
           finalBirdeye=true;
@@ -264,7 +264,7 @@ export class Scanner {
             if(r.devRisk==="high"||r.holderRisk==="high"||r.bundleRisk==="high"||r.confidence==="high") snap.onChainRisk=r;
           }).catch(()=>{});
         }
-        scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; dogBrain.observe(c);
+        scored=scoreCandidate(c); c.score=scored.score;c.dataConfidence=scored.confidence;c.decisionReason=scored.reason; learnedThresholds=dogBrain.entryThresholds(); if(c.score>=learnedThresholds.buyScore&&c.firstBuyScoreAt==null)c.firstBuyScoreAt=Date.now(); dogBrain.observe(c);
       }
 
       // Hybrid entry lanes: strict v8.3-style normal entries plus a calculated-risk early-runner FLAME exception.
@@ -296,7 +296,7 @@ export class Scanner {
         && flameRisk.ok
         && microFlameOK;
       const requiredObservationMs=(!config.liveTrading&&config.paperFastSafety)?config.paperMinObservationMs:config.minObservationMs;
-      const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?config.paperMinDataConfidence:config.minDataConfidence;
+      const requiredConfidence=(!config.liveTrading&&config.paperFastSafety)?learnedThresholds.paperConfidence:learnedThresholds.confidence;
       const aiEligibleBase=age>=requiredObservationMs
         && c.score>=config.aiCoinMinScore
         && c.score<=config.aiCoinMaxScore
@@ -311,9 +311,9 @@ export class Scanner {
       // 75-78: a confident PASS can veto; unavailable/no-opinion falls back to normal Dog Bot.
       // 72-74: AI may promote ONLY with very high confidence and all normal non-score gates already passed.
       const aiVeto=!!aiDecision?.ok && aiDecision.verdict==="PASS" && aiDecision.confidence>=config.aiCoinPassConfidence;
-      const aiPromote=c.score<config.buyScore
+      const aiPromote=c.score<learnedThresholds.buyScore
         && !!aiDecision?.ok && aiDecision.verdict==="BUY" && aiDecision.confidence>=config.aiCoinPromoteConfidence;
-      const scoreApproved=c.score>=config.buyScore || aiPromote;
+      const scoreApproved=c.score>=learnedThresholds.buyScore || aiPromote;
       const normalEntry=age>=requiredObservationMs
         && scoreApproved
         && c.dataConfidence>=requiredConfidence
@@ -322,7 +322,7 @@ export class Scanner {
         && !aiVeto
         && !antiFomoBlocked;
 
-      if(aiPromote) log.info(`[🤖 AI PROMOTE] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} below normal ${config.buyScore}, but AI BUY ${aiDecision!.confidence}% | all hard gates passed`);
+      if(aiPromote) log.info(`[🤖 AI PROMOTE] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} below adaptive normal ${learnedThresholds.buyScore}, but AI BUY ${aiDecision!.confidence}% | all hard gates passed`);
       if(aiVeto) log.warn(`[🤖 AI PASS] ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} | AI PASS ${aiDecision!.confidence}% | ${aiDecision!.reason}`);
 
       if(flame){
@@ -339,13 +339,13 @@ export class Scanner {
         c.state="DROPPED"; c.lastDroppedAt=Date.now(); c.decisionReason=`NO BUY: 🤖 AI PASS ${aiDecision!.confidence}% | ${aiDecision!.reason}`; dogBrain.markDecision(c,"REJECTED");
       } else if(age>=config.maxObservationMs){
         c.state="DROPPED";c.lastDroppedAt=Date.now();
-        const why=!routesOK?"buy/sell route unavailable":c.score<config.buyScore?`score ${Math.round(c.score)} < ${config.buyScore}`:c.dataConfidence<requiredConfidence?`data ${Math.round(c.dataConfidence)}% < ${requiredConfidence}%`:!entryRisk.ok?entryRisk.why:"observation ended";
+        const why=!routesOK?"buy/sell route unavailable":c.score<learnedThresholds.buyScore?`score ${Math.round(c.score)} < adaptive ${learnedThresholds.buyScore}`:c.dataConfidence<requiredConfidence?`data ${Math.round(c.dataConfidence)}% < ${requiredConfidence}%`:!entryRisk.ok?entryRisk.why:"observation ended";
         c.decisionReason=`NO BUY: ${why}`; dogBrain.markDecision(c,"REJECTED");
       } else {
         c.state=c.score>=config.promoteScore?"DEVELOPING":"WATCHING";
-        if(c.score>=config.buyScore&&!entryRisk.ok)c.decisionReason=`WAITING SAFETY: ${entryRisk.why}`;
-        else if(c.score>=config.buyScore&&!routesOK)c.decisionReason="WAITING EXECUTION: buy/sell route not verified";
-        else if(c.score>=config.buyScore&&age<requiredObservationMs)c.decisionReason=`READYING ENTRY: observation ${Math.round(age/1000)}s/${Math.round(requiredObservationMs/1000)}s`;
+        if(c.score>=learnedThresholds.buyScore&&!entryRisk.ok)c.decisionReason=`WAITING SAFETY: ${entryRisk.why}`;
+        else if(c.score>=learnedThresholds.buyScore&&!routesOK)c.decisionReason="WAITING EXECUTION: buy/sell route not verified";
+        else if(c.score>=learnedThresholds.buyScore&&age<requiredObservationMs)c.decisionReason=`READYING ENTRY: observation ${Math.round(age/1000)}s/${Math.round(requiredObservationMs/1000)}s`;
       }
 
       if(snap.dataErrors?.length&&snap.priceUsd==null&&!snap.dataErrors.some(x=>x.includes("cooldown")))log.warn(`[DATA] ${c.token.name} ($${c.token.symbol}) | ${snap.dataErrors.join(" | ")}`);

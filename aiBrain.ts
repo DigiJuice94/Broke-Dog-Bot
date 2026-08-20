@@ -3,117 +3,69 @@ import { log } from "./log.ts";
 import { readJsonRecovered, writeJsonAtomic } from "./persistence.ts";
 import { Candidate } from "./types.ts";
 
-export type AiBrainReview={ enabled:boolean; ok:boolean; model?:string; text:string; };
-export type AiCoinReview={ enabled:boolean; ok:boolean; usedCall:boolean; verdict:"BUY"|"PASS"|"NO_OPINION"; confidence:number; reason:string; model?:string; budgetReason?:string; };
+export type AiBrainReview={ enabled:boolean; ok:boolean; model?:string; provider?:string; text:string; };
+export type AiCoinReview={ enabled:boolean; ok:boolean; usedCall:boolean; verdict:"BUY"|"PASS"|"NO_OPINION"; confidence:number; reason:string; model?:string; provider?:string; budgetReason?:string; };
 type Usage={day:string; total:number; reports:number; coins:number};
+type Provider={name:"Groq"|"Gemini"|"OpenRouter";model:string;key:string};
 
-const compact=(value:any)=>JSON.stringify(value,(k,v)=>{
-  if(k==="recentLessons"&&Array.isArray(v))return v.slice(-8);
-  if(Array.isArray(v)&&v.length>12)return v.slice(-12);
-  if(v instanceof Set)return [...v];
-  return v;
-});
+const compact=(value:any)=>JSON.stringify(value,(k,v)=>{if(k==="recentLessons"&&Array.isArray(v))return v.slice(-8);if(Array.isArray(v)&&v.length>12)return v.slice(-12);if(v instanceof Set)return [...v];return v;});
 
 class AiBrain {
   private usage:Usage=this.loadUsage();
   private coinCache=new Map<string,{at:number;review:AiCoinReview}>();
-
   private day(){return new Date().toISOString().slice(0,10);}
-  private loadUsage():Usage{
-    const d=this.day();
-    const raw=readJsonRecovered<Usage>(config.aiUsageFile);
-    if(raw?.day===d)return {day:d,total:Number(raw.total||0),reports:Number(raw.reports||0),coins:Number(raw.coins||0)};
-    return {day:d,total:0,reports:0,coins:0};
-  }
+  private loadUsage():Usage{const d=this.day();const raw=readJsonRecovered<Usage>(config.aiUsageFile);if(raw?.day===d)return {day:d,total:Number(raw.total||0),reports:Number(raw.reports||0),coins:Number(raw.coins||0)};return {day:d,total:0,reports:0,coins:0};}
   private resetIfNeeded(){if(this.usage.day!==this.day()){this.usage={day:this.day(),total:0,reports:0,coins:0};this.saveUsage();}}
   private saveUsage(){try{writeJsonAtomic(config.aiUsageFile,this.usage);}catch(e){log.warn(`🤖 AI usage counter save failed: ${e instanceof Error?e.message:String(e)}`);}}
-  private canSpend(kind:"report"|"coin"){
-    this.resetIfNeeded();
-    if(this.usage.total>=config.aiTotalMaxPerDay)return {ok:false,why:`daily total AI budget ${this.usage.total}/${config.aiTotalMaxPerDay} reached`};
-    if(kind==="coin"&&this.usage.coins>=config.aiCoinMaxPerDay)return {ok:false,why:`daily coin-review budget ${this.usage.coins}/${config.aiCoinMaxPerDay} reached`};
-    return {ok:true,why:""};
-  }
+  private canSpend(kind:"report"|"coin"){this.resetIfNeeded();if(this.usage.total>=config.aiTotalMaxPerDay)return {ok:false,why:`daily logical AI budget ${this.usage.total}/${config.aiTotalMaxPerDay} reached`};if(kind==="coin"&&this.usage.coins>=config.aiCoinMaxPerDay)return {ok:false,why:`daily coin-review budget ${this.usage.coins}/${config.aiCoinMaxPerDay} reached`};return {ok:true,why:""};}
   private spend(kind:"report"|"coin"){this.resetIfNeeded();this.usage.total++;if(kind==="report")this.usage.reports++;else this.usage.coins++;this.saveUsage();}
-
-  enabled(){return config.aiBrainEnabled&&!!config.openRouterApiKey;}
-  usageText(){this.resetIfNeeded();return `${this.usage.total}/${config.aiTotalMaxPerDay} total | ${this.usage.coins}/${config.aiCoinMaxPerDay} coin reviews | ${this.usage.reports} reports`; }
-  startupText(){
-    if(!config.aiBrainEnabled)return "AI Brain OFF (AI_BRAIN_ENABLED=false)";
-    if(!config.openRouterApiKey)return "AI Brain READY but no OPENROUTER_API_KEY — Dog Bot continues normally without AI";
-    return `AI Brain ON | ${config.aiBrainModel} | near-buy second opinion ${config.aiCoinMinScore}-${config.aiCoinMaxScore} | fallback trading ON | budget ${this.usageText()}`;
-  }
-
+  private providers():Provider[]{const p:Provider[]=[];if(config.groqApiKey)p.push({name:"Groq",model:config.groqModel,key:config.groqApiKey});if(config.geminiApiKey)p.push({name:"Gemini",model:config.geminiModel,key:config.geminiApiKey});if(config.openRouterApiKey)p.push({name:"OpenRouter",model:config.aiBrainModel,key:config.openRouterApiKey});return p;}
+  enabled(){return config.aiBrainEnabled&&this.providers().length>0;}
+  usageText(){this.resetIfNeeded();return `${this.usage.total}/${config.aiTotalMaxPerDay} logical requests | ${this.usage.coins}/${config.aiCoinMaxPerDay} coin reviews | ${this.usage.reports} reports`;}
+  startupText(){if(!config.aiBrainEnabled)return "AI Brain OFF (AI_BRAIN_ENABLED=false)";const chain=this.providers().map(x=>`${x.name}:${x.model}`).join(" → ");if(!chain)return "AI Brain READY but no provider key — add GROQ_API_KEY and/or GEMINI_API_KEY; OpenRouter remains optional fallback";return `AI Brain FAILOVER ON | ${chain} → deterministic Dog Brain fallback | near-buy ${config.aiCoinMinScore}-${config.aiCoinMaxScore} | ${this.usageText()}`;}
   shouldReviewCoin(c:Candidate){return config.aiCoinReviewEnabled&&c.score>=config.aiCoinMinScore&&c.score<=config.aiCoinMaxScore;}
 
-  async reviewCoin(c:Candidate):Promise<AiCoinReview>{
-    if(!this.enabled()||!config.aiCoinReviewEnabled)return {enabled:false,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:"AI coin review disabled"};
-    if(!this.shouldReviewCoin(c))return {enabled:true,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:`score ${Math.round(c.score)} outside AI review window ${config.aiCoinMinScore}-${config.aiCoinMaxScore}`};
-    const cached=this.coinCache.get(c.token.address);
-    if(cached&&Date.now()-cached.at<config.aiCoinCacheMs)return {...cached.review,usedCall:false,reason:`${cached.review.reason} (cached)`};
-    const budget=this.canSpend("coin");
-    if(!budget.ok)return {enabled:true,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:`AI unavailable: ${budget.why}; use normal Dog Bot rules`,budgetReason:budget.why};
-
-    const snap=c.snapshots.at(-1);
-    if(!snap)return {enabled:true,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:"No snapshot available; use normal Dog Bot rules"};
-    const payload={
-      token:{name:c.token.name,symbol:c.token.symbol,address:c.token.address,ageMin:(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000},
-      scores:{overall:c.score,runner:c.runnerScore,quality:c.qualityScore,dataConfidence:c.dataConfidence,market:c.marketScore,social:c.socialScore,safety:c.safetyScore},
-      signals:{sources:[...c.sources],priceUsd:snap.priceUsd,liquidityUsd:snap.liquidityUsd,marketCapUsd:snap.marketCapUsd,volume1mUsd:snap.volume1mUsd,volume5mUsd:snap.volume5mUsd,buys1m:snap.buys1m,sells1m:snap.sells1m,buys5m:snap.buys5m,sells5m:snap.sells5m,uniqueWallet1m:snap.uniqueWallet1m,priceChange1mPct:snap.priceChange1mPct,priceChange5mPct:snap.priceChange5mPct,bundleRisk:snap.bundleRisk,bundleStatus:snap.bundleStatus,routeQuality:snap.routeQuality,buyRoute:snap.buyRoute,sellRoute:snap.sellRoute,top10HolderPct:snap.onChainRisk?.top10Pct??snap.top10HolderPct,onChainRisk:snap.onChainRisk,social:snap.social,smartMoney:snap.smartMoney,metaRunner:c.metaRunner},
-      rules:{normalBuyScore:config.buyScore,reviewWindow:[config.aiCoinMinScore,config.aiCoinMaxScore],hardSafetyAlreadyPassed:true}
-    };
+  private async callProvider(p:Provider,system:string,user:string,maxTokens:number,jsonMode=false):Promise<{text:string;model:string;provider:string}>{
     const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),config.aiBrainTimeoutMs);
     try{
-      this.spend("coin");
-      const system=`You are the real-time second-opinion analyst for Broke Dog Bot, a Solana memecoin bot. A deterministic safety gate has already passed. Evaluate ONLY whether this near-threshold candidate has enough evidence to justify entry. Return strict JSON only: {"verdict":"BUY"|"PASS"|"NO_OPINION","confidence":0-100,"reason":"one concise evidence-based sentence"}. Never override a hard safety rule. Penalize weak data, fake momentum, poor buy/sell balance, concentrated/bundled risk, bad route quality, thin liquidity relative to intended trade, late entries, and conflicting signals. Reward accelerating organic buying, multiple independent sources, strong unique-wallet participation, favorable buy/sell pressure, healthy holder structure, and coherent momentum. If evidence is ambiguous use NO_OPINION. Do not promise profit.`;
-      const r=await fetch("https://openrouter.ai/api/v1/chat/completions",{method:"POST",signal:controller.signal,headers:{Authorization:`Bearer ${config.openRouterApiKey}`,"Content-Type":"application/json","HTTP-Referer":"https://railway.app","X-Title":"Broke Dog Bot AI Brain"},body:JSON.stringify({model:config.aiBrainModel,messages:[{role:"system",content:system},{role:"user",content:compact(payload)}],temperature:0.1,max_tokens:220,response_format:{type:"json_object"}})});
-      if(!r.ok)throw new Error(`OpenRouter ${r.status}: ${(await r.text()).slice(0,220)}`);
-      const data:any=await r.json();const raw=String(data?.choices?.[0]?.message?.content??"").trim();
-      const match=raw.match(/\{[\s\S]*\}/);if(!match)throw new Error("AI returned non-JSON coin review");
-      const parsed=JSON.parse(match[0]);
-      const verdict=["BUY","PASS","NO_OPINION"].includes(parsed?.verdict)?parsed.verdict:"NO_OPINION";
-      const confidence=Math.max(0,Math.min(100,Number(parsed?.confidence)||0));
-      const reason=String(parsed?.reason??"No reason supplied").slice(0,280);const model=String(data?.model??config.aiBrainModel);
-      const review:AiCoinReview={enabled:true,ok:true,usedCall:true,verdict,confidence,reason,model};
-      this.coinCache.set(c.token.address,{at:Date.now(),review});
-      log.info(`🤖🪙 AI COIN ${verdict} ${confidence}% | ${c.token.name} ($${c.token.symbol}) | Score:${Math.round(c.score)} | ${reason} | budget ${this.usageText()}`);
-      return review;
-    }catch(e){
-      const msg=e instanceof Error?e.message:String(e);
-      log.warn(`🤖🪙 AI COIN unavailable | ${c.token.name} | ${msg} | normal Dog Bot rules remain active`);
-      return {enabled:true,ok:false,usedCall:true,verdict:"NO_OPINION",confidence:0,reason:`AI unavailable (${msg.slice(0,140)}); use normal Dog Bot rules`};
-    }finally{clearTimeout(timer);}
+      if(p.name==="Gemini"){
+        const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(p.model)}:generateContent`;
+        const body:any={systemInstruction:{parts:[{text:system}]},contents:[{role:"user",parts:[{text:user}]}],generationConfig:{temperature:0.15,maxOutputTokens:maxTokens}};
+        if(jsonMode)body.generationConfig.responseMimeType="application/json";
+        const r=await fetch(url,{method:"POST",signal:controller.signal,headers:{"x-goog-api-key":p.key,"Content-Type":"application/json"},body:JSON.stringify(body)});
+        if(!r.ok)throw new Error(`Gemini ${r.status}: ${(await r.text()).slice(0,220)}`);
+        const data:any=await r.json();const text=String(data?.candidates?.[0]?.content?.parts?.map((x:any)=>x?.text??"").join("")??"").trim();if(!text)throw new Error("Gemini returned empty response");return {text,model:p.model,provider:p.name};
+      }
+      const isGroq=p.name==="Groq";const url=isGroq?"https://api.groq.com/openai/v1/chat/completions":"https://openrouter.ai/api/v1/chat/completions";
+      const headers:any={Authorization:`Bearer ${p.key}`,"Content-Type":"application/json"};if(!isGroq){headers["HTTP-Referer"]="https://railway.app";headers["X-Title"]="Broke Dog Bot AI Brain";}
+      const body:any={model:p.model,messages:[{role:"system",content:system},{role:"user",content:user}],temperature:0.15,max_tokens:maxTokens};if(jsonMode)body.response_format={type:"json_object"};
+      const r=await fetch(url,{method:"POST",signal:controller.signal,headers,body:JSON.stringify(body)});if(!r.ok)throw new Error(`${p.name} ${r.status}: ${(await r.text()).slice(0,220)}`);const data:any=await r.json();const text=String(data?.choices?.[0]?.message?.content??"").trim();if(!text)throw new Error(`${p.name} returned empty response`);return {text,model:String(data?.model??p.model),provider:p.name};
+    } finally {clearTimeout(timer);}
   }
+
+  private async failover(system:string,user:string,maxTokens:number,jsonMode=false){const errors:string[]=[];for(const p of this.providers()){try{const r=await this.callProvider(p,system,user,maxTokens,jsonMode);if(errors.length)log.info(`🤖🔁 AI FAILOVER SUCCESS | ${r.provider} answered after ${errors.length} provider failure(s)`);return {...r,errors};}catch(e){const msg=e instanceof Error?e.message:String(e);errors.push(msg);log.warn(`🤖🔁 ${p.name} unavailable — trying next provider | ${msg}`);}}throw new Error(errors.join(" | ")||"No AI provider configured");}
+
+  async reviewCoin(c:Candidate):Promise<AiCoinReview>{
+    if(!this.enabled()||!config.aiCoinReviewEnabled)return {enabled:false,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:"External AI unavailable/disabled; deterministic Dog Bot rules remain active"};
+    if(!this.shouldReviewCoin(c))return {enabled:true,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:`score ${Math.round(c.score)} outside AI review window ${config.aiCoinMinScore}-${config.aiCoinMaxScore}`};
+    const cached=this.coinCache.get(c.token.address);if(cached&&Date.now()-cached.at<config.aiCoinCacheMs)return {...cached.review,usedCall:false,reason:`${cached.review.reason} (cached)`};
+    const budget=this.canSpend("coin");if(!budget.ok)return {enabled:true,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:`AI unavailable: ${budget.why}; normal Dog Bot rules continue`,budgetReason:budget.why};
+    const snap=c.snapshots.at(-1);if(!snap)return {enabled:true,ok:false,usedCall:false,verdict:"NO_OPINION",confidence:0,reason:"No snapshot available; normal Dog Bot rules continue"};
+    const payload={token:{name:c.token.name,symbol:c.token.symbol,address:c.token.address,ageMin:(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000},scores:{overall:c.score,runner:c.runnerScore,quality:c.qualityScore,dataConfidence:c.dataConfidence,market:c.marketScore,social:c.socialScore,safety:c.safetyScore},signals:{sources:[...c.sources],sourceFirstSeenAt:c.sourceFirstSeenAt,priceUsd:snap.priceUsd,liquidityUsd:snap.liquidityUsd,marketCapUsd:snap.marketCapUsd,volume1mUsd:snap.volume1mUsd,volume5mUsd:snap.volume5mUsd,buys1m:snap.buys1m,sells1m:snap.sells1m,buys5m:snap.buys5m,sells5m:snap.sells5m,uniqueWallet1m:snap.uniqueWallet1m,priceChange1mPct:snap.priceChange1mPct,priceChange5mPct:snap.priceChange5mPct,bundleRisk:snap.bundleRisk,bundleStatus:snap.bundleStatus,routeQuality:snap.routeQuality,routeRoundTripPct:snap.routeRoundTripPct,routeQuoteAgeMs:snap.routeQuotedAt?Date.now()-snap.routeQuotedAt:null,buyRoute:snap.buyRoute,sellRoute:snap.sellRoute,top10HolderPct:snap.onChainRisk?.top10Pct??snap.top10HolderPct,onChainRisk:snap.onChainRisk,social:snap.social,smartMoney:snap.smartMoney,metaRunner:c.metaRunner},rules:{normalBuyScore:config.buyScore,reviewWindow:[config.aiCoinMinScore,config.aiCoinMaxScore],hardSafetyAlreadyPassed:true}};
+    const system=`You are the real-time second-opinion analyst for Broke Dog Bot, a Solana memecoin bot. A deterministic safety gate has already passed. Evaluate ONLY whether this near-threshold candidate has enough evidence to justify entry. Return strict JSON only: {"verdict":"BUY"|"PASS"|"NO_OPINION","confidence":0-100,"reason":"one concise evidence-based sentence"}. Never override a hard safety rule. Penalize weak/missing data, fake momentum, poor buy/sell balance, concentrated/bundled risk, bad executable route quality, late entries, and conflicting signals. Reward accelerating organic buying, multiple independent sources, strong unique-wallet participation, healthy holders, and coherent momentum. If ambiguous use NO_OPINION. Never promise profit.`;
+    try{this.spend("coin");const a=await this.failover(system,compact(payload),220,true);const match=a.text.match(/\{[\s\S]*\}/);if(!match)throw new Error(`${a.provider} returned non-JSON coin review`);const parsed=JSON.parse(match[0]);const verdict=["BUY","PASS","NO_OPINION"].includes(parsed?.verdict)?parsed.verdict:"NO_OPINION";const confidence=Math.max(0,Math.min(100,Number(parsed?.confidence)||0));const reason=String(parsed?.reason??"No reason supplied").slice(0,280);const review:AiCoinReview={enabled:true,ok:true,usedCall:true,verdict,confidence,reason,model:a.model,provider:a.provider};this.coinCache.set(c.token.address,{at:Date.now(),review});log.info(`🤖🪙 AI COIN ${verdict} ${confidence}% | ${c.token.name} | ${a.provider}/${a.model} | ${reason}`);return review;}catch(e){const msg=e instanceof Error?e.message:String(e);log.warn(`🤖🪙 ALL external AI unavailable | ${c.token.name} | deterministic rules continue | ${msg}`);return {enabled:true,ok:false,usedCall:true,verdict:"NO_OPINION",confidence:0,reason:`All external AI unavailable; normal Dog Bot rules continue (${msg.slice(0,120)})`};}
+  }
+
+  private deterministicReportFallback(paperBrain:any,liveBrain:any,windowLabel:string){const brain=(paperBrain?.resolvedSampleSize??0)>=(liveBrain?.resolvedSampleSize??0)?paperBrain:liveBrain;const recs=(brain?.preciseRecommendations??[]).slice(0,3);const needs=(brain?.moreDataNeeded??[]).slice(0,3);return `🤖💰 AI PROFIT VERDICT\nExternal AI providers were unavailable for this ${windowLabel} report. Trading and Dog Brain learning continued normally. No strategy setting was automatically changed.\n\n✅ WHAT DOG BOT IS DOING WELL\nDog Brain remained active and preserved its deterministic evidence analysis.\n\n❌ WHAT IS HURTING PROFITABILITY\nExternal AI capacity is unavailable right now; this does not block entries or exits.\n\n🧠 HOW I WOULD HELP DOG BRAIN GET SMARTER\n${needs.length?needs.map((x:string)=>`• ${x}`).join("\n"):"• Keep collecting resolved trades, rejected-coin outcomes, route quality, holder/bundle data, and entry timing."}\n\n🎯 HIGHEST-IMPACT CHANGES TO TEST\n${recs.length?recs.map((x:string)=>`• ${x}`).join("\n"):"• NO CHANGE until more resolved evidence exists."}\n\n📈 ENTRY / COIN-SELECTION TAKEAWAY\nUse Dog Brain evidence and hard safety; do not lower thresholds solely because external AI is unavailable.\n\n🚪 EXIT / PROFIT-PROTECTION TAKEAWAY\nKeep recording peak-vs-exit giveback and post-exit counterfactuals.\n\n🔬 DATA I NEED BEFORE GETTING MORE AGGRESSIVE\nMore resolved samples with route, holder/bundle, source timing, and counterfactual exit data.\n\n💵 PATH TO BETTER EXPECTED PROFIT\nCollect cleaner evidence first, then test one parameter change at a time.`;}
 
   async reviewCombined(paper:any,live:any,paperBrain:any,liveBrain:any,windowLabel:string):Promise<AiBrainReview>{
-    if(!this.enabled())return {enabled:false,ok:false,text:""};
-    const budget=this.canSpend("report");
-    if(!budget.ok)return {enabled:true,ok:false,text:`🤖 AI report skipped to preserve trading continuity (${budget.why}). Dog Brain and trading continued normally.`};
-    const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),config.aiBrainTimeoutMs);
-    try{
-      this.spend("report");
-      const settings={BUY_SCORE:config.buyScore,ELITE_SCORE:config.eliteScore,FLAME_MIN_SCORE:config.flameMinScore,HARD_STOP_LOSS_PCT:config.hardStopLossPct,SOFT_STOP_LOSS_PCT:config.softStopLossPct,TRAILING_STOP_PCT:config.trailingStopPct,TAKE_PROFIT_PCT:config.takeProfitPct,PROFIT_PROTECT_ARM_PCT:config.profitProtectArmPct,PEAK_PROFIT_ARM_PCT:config.peakProfitArmPct,PEAK_PROFIT_FLOOR_PCT:config.peakProfitFloorPct,PEAK_GIVEBACK_EXIT_PCT:config.peakGivebackExitPct,PAPER_NORMAL_MAX_USD:config.paperNormalMaxUsd,PAPER_ELITE_MAX_USD:config.paperEliteMaxUsd,PAPER_FLAME_MAX_USD:config.paperFlameMaxUsd,LIVE_TRADING:config.liveTrading};
-      const slimWallet=(wallet:any)=>({equityUsd:wallet?.equityUsd,cashUsd:wallet?.cashUsd,openValueUsd:wallet?.openValueUsd,totalPnlUsd:wallet?.totalPnlUsd,totalReturnPct:wallet?.totalReturnPct,realizedUsd:wallet?.realizedUsd,unrealizedUsd:wallet?.unrealizedUsd,wins:wallet?.wins,losses:wallet?.losses,lifetimeWins:wallet?.lifetimeWins,lifetimeLosses:wallet?.lifetimeLosses,lifetimeWinRatePct:wallet?.lifetimeWinRatePct,bestTradePct:wallet?.bestTradePct,worstTradePct:wallet?.worstTradePct,closedTrades:wallet?.closedTrades?.slice?.(-10),openPositions:wallet?.openPositions?.slice?.(-10)});
-      const payload={window:windowLabel,activeMode:config.liveTrading?"LIVE":"PAPER",currentSettings:settings,aiUsage:this.usage,paper:{wallet:slimWallet(paper),dogBrain:paperBrain},live:{wallet:slimWallet(live),dogBrain:liveBrain}};
-      const system=`You are the profit-focused external AI co-analyst for Broke Dog Bot, a Solana memecoin trading bot. Help the creator improve expected profitability using ONLY supplied evidence. Never promise profit. Keep PAPER and LIVE evidence separate. Challenge weak Dog Brain conclusions. Return creator-facing text with these headings exactly:
-🤖💰 AI PROFIT VERDICT
-✅ WHAT DOG BOT IS DOING WELL
-❌ WHAT IS HURTING PROFITABILITY
-🧠 HOW I WOULD HELP DOG BRAIN GET SMARTER
-🎯 HIGHEST-IMPACT CHANGES TO TEST
-📈 ENTRY / COIN-SELECTION TAKEAWAY
-🚪 EXIT / PROFIT-PROTECTION TAKEAWAY
-🔬 DATA I NEED BEFORE GETTING MORE AGGRESSIVE
-💵 PATH TO BETTER EXPECTED PROFIT
-For parameter changes include current value, proposed test, evidence/sample size, expected upside, downside, and confidence. Say NO CHANGE if evidence is insufficient. Never recommend disabling hard safety or chasing losses.`;
-      const r=await fetch("https://openrouter.ai/api/v1/chat/completions",{method:"POST",signal:controller.signal,headers:{Authorization:`Bearer ${config.openRouterApiKey}`,"Content-Type":"application/json","HTTP-Referer":"https://railway.app","X-Title":"Broke Dog Bot AI Brain"},body:JSON.stringify({model:config.aiBrainModel,messages:[{role:"system",content:system},{role:"user",content:`Review this combined ${windowLabel} report. PAPER and LIVE must remain analytically separate:\n${compact(payload)}`}],temperature:0.2,max_tokens:config.aiBrainMaxTokens})});
-      if(!r.ok)throw new Error(`OpenRouter ${r.status}: ${(await r.text()).slice(0,240)}`);
-      const data:any=await r.json();const text=String(data?.choices?.[0]?.message?.content??"").trim();if(!text)throw new Error("OpenRouter returned an empty analysis");
-      const model=String(data?.model??config.aiBrainModel);log.info(`🤖🧠 AI BRAIN combined profit review complete | ${windowLabel} | ${model} | budget ${this.usageText()}`);
-      return {enabled:true,ok:true,model,text:text.slice(0,config.aiBrainMaxChars)};
-    }catch(e){const msg=e instanceof Error?e.message:String(e);log.warn(`🤖🧠 AI BRAIN unavailable | combined ${windowLabel} | ${msg} | Dog Bot continues normally`);return {enabled:true,ok:false,text:`🤖 AI Brain unavailable for this report (${msg.slice(0,160)}). Dog Brain and trading continued normally; no strategy setting was changed.`};}
-    finally{clearTimeout(timer);}
+    if(!config.aiBrainEnabled)return {enabled:false,ok:false,text:""};const budget=this.canSpend("report");if(!budget.ok)return {enabled:true,ok:false,text:`🤖 AI report skipped (${budget.why}). Dog Brain and trading continued normally.`};
+    const settings={BUY_SCORE:config.buyScore,ELITE_SCORE:config.eliteScore,FLAME_MIN_SCORE:config.flameMinScore,HARD_STOP_LOSS_PCT:config.hardStopLossPct,SOFT_STOP_LOSS_PCT:config.softStopLossPct,TRAILING_STOP_PCT:config.trailingStopPct,TAKE_PROFIT_PCT:config.takeProfitPct,PAPER_MAX_DAILY_LOSS_USD:config.paperMaxDailyLossUsd,LIVE_MAX_DAILY_LOSS_USD:config.liveMaxDailyLossUsd,PAPER_NORMAL_MAX_USD:config.paperNormalMaxUsd,PAPER_ELITE_MAX_USD:config.paperEliteMaxUsd,PAPER_FLAME_MAX_USD:config.paperFlameMaxUsd,LIVE_TRADING:config.liveTrading};
+    const slim=(w:any)=>({equityUsd:w?.equityUsd,cashUsd:w?.cashUsd,openValueUsd:w?.openValueUsd,totalPnlUsd:w?.totalPnlUsd,totalReturnPct:w?.totalReturnPct,realizedUsd:w?.realizedUsd,unrealizedUsd:w?.unrealizedUsd,wins:w?.wins,losses:w?.losses,lifetimeWins:w?.lifetimeWins,lifetimeLosses:w?.lifetimeLosses,lifetimeWinRatePct:w?.lifetimeWinRatePct,closedTrades:w?.closedTrades?.slice?.(-10),openPositions:w?.openPositions?.slice?.(-10)});
+    const payload={window:windowLabel,activeMode:config.liveTrading?"LIVE":"PAPER",currentSettings:settings,aiUsage:this.usage,paper:{wallet:slim(paper),dogBrain:paperBrain},live:{wallet:slim(live),dogBrain:liveBrain}};
+    const system=`You are the profit-focused external AI co-analyst for Broke Dog Bot. Use ONLY supplied evidence. Never promise profit. Keep PAPER and LIVE separate. Challenge weak conclusions. Return creator-facing text with these headings exactly:\n🤖💰 AI PROFIT VERDICT\n✅ WHAT DOG BOT IS DOING WELL\n❌ WHAT IS HURTING PROFITABILITY\n🧠 HOW I WOULD HELP DOG BRAIN GET SMARTER\n🎯 HIGHEST-IMPACT CHANGES TO TEST\n📈 ENTRY / COIN-SELECTION TAKEAWAY\n🚪 EXIT / PROFIT-PROTECTION TAKEAWAY\n🔬 DATA I NEED BEFORE GETTING MORE AGGRESSIVE\n💵 PATH TO BETTER EXPECTED PROFIT\nFor parameter changes include current value, proposed test, evidence/sample size, upside, downside, confidence. Say NO CHANGE when evidence is insufficient. Never recommend disabling hard safety or chasing losses.`;
+    if(!this.enabled())return {enabled:true,ok:false,text:this.deterministicReportFallback(paperBrain,liveBrain,windowLabel)};
+    try{this.spend("report");const a=await this.failover(system,`Review this combined ${windowLabel} report. PAPER and LIVE must remain analytically separate:\n${compact(payload)}`,config.aiBrainMaxTokens,false);log.info(`🤖🧠 AI BRAIN review complete | ${a.provider}/${a.model}`);return {enabled:true,ok:true,model:a.model,provider:a.provider,text:a.text.slice(0,config.aiBrainMaxChars)};}catch(e){const msg=e instanceof Error?e.message:String(e);log.warn(`🤖🧠 ALL AI providers unavailable | deterministic report fallback used | ${msg}`);return {enabled:true,ok:false,text:this.deterministicReportFallback(paperBrain,liveBrain,windowLabel)};}
   }
 }
-
 export const aiBrain=new AiBrain();

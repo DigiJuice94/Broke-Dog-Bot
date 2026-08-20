@@ -1,3 +1,22 @@
+# Broke Dog Bot v1.13.0 — Autonomous Runner Brain + Memory Lock
+
+## What changed in v1.13.0
+- Dog Brain now **automatically adjusts selected strategy thresholds** from resolved trade evidence. No creator approval is required for each small adaptation.
+- **Trade dollar amounts stay locked to your configured sizing caps. Dog Brain never changes them.**
+- New live position classifier: `STANDARD`, `STRONG_RUNNER`, `MONSTER_RUNNER`. Strong/monster runners can earn higher profit targets, wider trails, and more time while the normal exit framework remains active.
+- Dog Brain learns from post-exit outcomes: if exits repeatedly leave +20% or more on the table, runner patience increases; if profitable exits are followed by sharp deterioration, patience decreases.
+- Entry score and soft-stop behavior can move gradually within hard bounds based on recent evidence. Hard safety cannot be disabled.
+- Learning state is schema v2 and migrates old Dog Brain v1 memory forward.
+- On boot, successful restore prints **`🧠✅ MEMORY REMEMBERED`** with stored record/sample/adaptation counts.
+- Persistence is required by default. With `DOG_BRAIN_REQUIRE_PERSISTENCE=true`, the bot refuses to start on an ephemeral filesystem so an update cannot silently erase its learning.
+
+## Railway persistence requirement
+Mount a Railway persistent Volume. The bot automatically uses `RAILWAY_VOLUME_MOUNT_PATH`; alternatively set `DOG_BRAIN_DATA_DIR` to the volume mount (for example `/data`). Keep the same volume attached when deploying later versions.
+
+# Broke Dog Bot v1.12.0 — Evidence + AI Failover
+
+> Corrected build base: v1.11.1 Dual Daily Loss Fix. The v1.11.1 paper/live daily-loss logic is preserved; v1.12.0 only layers the AI failover and evidence upgrades on top.
+
 # Broke Dog Bot v1.9.0 — Peak-Profit Ratchet
 
 **v1.9.0 changes:**
@@ -263,3 +282,12 @@ If OpenRouter is unavailable, rate-limited, times out, or returns an error, Brok
 - Paper SELL ledger records hold time, peak P&L, peak giveback, exit reason and full entry-analysis data.
 - Email reports add a per-trade Trade Forensics section for comparing winners vs losers.
 - Existing Dog Brain memory file/path is unchanged; this upgrade does not intentionally reset learned history.
+
+
+## v1.12.0 — Evidence + AI Failover
+- Separate PAPER and LIVE daily loss brakes. Defaults: PAPER $50, LIVE $7.
+- External AI failover chain: Groq -> Gemini -> OpenRouter. One provider outage/429 no longer kills the Profit Coach.
+- If all providers are unavailable, reports fall back to deterministic Dog Brain evidence analysis and trading continues normally.
+- Adds per-source first-seen timestamps, first buy-threshold timestamp, route quote telemetry, missing-data audit fields, entry-timing audit data, and persisted exit counterfactual summaries.
+- Captures position price-history points used to determine whether the configured TP or stop would have been reached first during the tracked trade.
+- Existing persistent wallet state, paper ledger, and Dog Brain memory files are preserved.
