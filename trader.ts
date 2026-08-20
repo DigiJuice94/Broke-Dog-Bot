@@ -198,7 +198,7 @@ export class Trader {
         this.positions.set(c.token.address, {
           mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals:c.token.decimals || 6,
           tokenAmountRaw:0n,entrySolLamports:lamports,entryUsd:usd,entryPriceUsd:entryPrice,paperEntryCostUsd:usd,
-          openedAt:Date.now(),highPriceUsd:entryPrice,priceHistory:[{at:Date.now(),priceUsd:entryPrice,pnlPct:0}],scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
+          openedAt:Date.now(),highPriceUsd:entryPrice,priceHistory:[{at:Date.now(),priceUsd:entryPrice,pnlPct:0}],scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:true,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c),addCount:0,initialEntryUsd:usd
         });
         c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
         log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥🐶 PAPER FLAME BUY":"🧪🐶 PAPER BUY",reason:`${lane} | 💵 Invested:$${usd.toFixed(2)} | 🏦 Cash:$${walletBefore.toFixed(2)}→$${this.paperCashUsd.toFixed(2)} | 📍 Entry:$${entryPrice.toPrecision(6)} | CA:${c.token.address}` });
@@ -220,7 +220,7 @@ export class Trader {
       this.positions.set(c.token.address, {
         mint:c.token.address,name:c.token.name,symbol:c.token.symbol,decimals,tokenAmountRaw:raw,
         entrySolLamports:result.inRaw,entryUsd:usd,entryPriceUsd:actualEntryPrice,openedAt:Date.now(),highPriceUsd:actualEntryPrice,priceHistory:[{at:Date.now(),priceUsd:actualEntryPrice,pnlPct:0}],
-        signature:result.signature,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:false,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c)
+        signature:result.signature,scoreAtBuy:c.score,confidenceAtBuy:c.dataConfidence,paper:false,socialAccountsAtBuy:snap.social?.keyAccounts??[],metaRunnerAtBuy:c.metaRunner,lane,entryAnalysis:this.entryAnalysis(c),addCount:0,initialEntryUsd:usd
       });
       c.state = "BOUGHT"; dogBrain.markDecision(c,"BOUGHT"); this.saveState();
       log.scan({ name:c.token.name,symbol:c.token.symbol,priceUsd:snap.priceUsd,score:c.score,confidence:c.dataConfidence,status:lane==="FLAME"?"🔥 FLAME BOUGHT":"🟢 BOUGHT",reason:`${lane} | $${usd.toFixed(2)} | Contract:${c.token.address} | tx ${result.signature}` });
@@ -414,6 +414,28 @@ export class Trader {
     return {mode,solBalance,walletSolUsd:solBalance*solUsd,realizedTodayUsd:this.realizedToday,wins,losses,buys,sells,closedTrades,openPositions};
   }
 
+  private async maybeAddConfirmedPosition(p:Position,s:Partial<any>,price:number,chartPnl:number,momentumRatio:number,momentumPrice:number){
+    if(!config.omoStyleEnabled||!config.omoConfirmationAdds||p.basisUnknown)return false;
+    const addCount=Number(p.addCount??0); if(addCount>=config.omoMaxAdds)return false;
+    if(Date.now()-(p.lastAddAt??p.openedAt)<config.omoAddCooldownMs)return false;
+    if(chartPnl<config.omoAddMinPnlPct||chartPnl>config.omoAddMaxPnlPct)return false;
+    if(momentumRatio<config.omoAddMinBuySellRatio||momentumPrice<config.omoAddMinPriceMomentumPct)return false;
+    if(Number(s.volume5mUsd??0)<config.omoAddMinVolume5mUsd)return false;
+    if(Number(s.liquidityUsd??0)<config.omoMinLiquidityUsd)return false;
+    const initial=Number(p.initialEntryUsd??p.entryUsd); let usd=Math.max(config.minPositionUsd,initial*(config.omoAddPctOfInitial/100));
+    if(!config.liveTrading){
+      usd=Math.min(usd,this.paperCashUsd); if(usd<config.minPositionUsd)return false;
+      const before=this.paperCashUsd; this.paperCashUsd-=usd;
+      const oldUsd=p.entryUsd,newUsd=oldUsd+usd; p.entryPriceUsd=((p.entryPriceUsd*oldUsd)+(price*usd))/newUsd; p.entryUsd=newUsd; p.paperEntryCostUsd=Number(p.paperEntryCostUsd??oldUsd)+usd; p.addCount=addCount+1;p.lastAddAt=Date.now();
+      this.appendPaperLedger({type:"ADD",at:new Date().toISOString(),mint:p.mint,name:p.name,symbol:p.symbol,lane:p.lane,entryPriceUsd:price,investedUsd:usd,cashBeforeUsd:before,cashAfterUsd:this.paperCashUsd,reason:`OMO confirmation add | B/S ${momentumRatio.toFixed(2)}x | momentum ${momentumPrice.toFixed(1)}% | pnl before add ${chartPnl.toFixed(1)}%`});
+      this.saveState(); log.info(`[🐕➕ OMO ADD] ${p.name} ($${p.symbol}) | +$${usd.toFixed(2)} after thesis confirmation | B/S ${momentumRatio.toFixed(2)}x | momentum ${momentumPrice.toFixed(1)}% | add ${p.addCount}/${config.omoMaxAdds}`); return true;
+    }
+    const solUsd=await this.solPrice.get(); const solBal=await this.wallet.solBalance(); const spendableUsd=Math.max(0,solBal-config.solFeeReserve)*solUsd; usd=Math.min(usd,spendableUsd); if(usd<config.minPositionUsd)return false;
+    const lamports=BigInt(Math.floor((usd/solUsd)*LAMPORTS_PER_SOL)); const result=await this.jupiter.swap(SOL_MINT,p.mint,lamports); const bal=await this.wallet.tokenBalanceRaw(p.mint);
+    const oldUsd=p.entryUsd,newUsd=oldUsd+usd; p.entryPriceUsd=((p.entryPriceUsd*oldUsd)+(price*usd))/newUsd;p.entryUsd=newUsd;p.entrySolLamports+=result.inRaw;p.tokenAmountRaw=bal.amount;p.addCount=addCount+1;p.lastAddAt=Date.now();this.saveState();
+    log.info(`[🐕➕ OMO ADD] ${p.name} ($${p.symbol}) | +$${usd.toFixed(2)} LIVE after confirmation | B/S ${momentumRatio.toFixed(2)}x | momentum ${momentumPrice.toFixed(1)}% | add ${p.addCount}/${config.omoMaxAdds}`); return true;
+  }
+
   async monitorPositions() {
     const now = Date.now();
     await this.reconcileWallet();
@@ -463,10 +485,13 @@ export class Trader {
         const chartPeakGivebackPct=chartPeakPnl>0?Math.max(0,(chartPeakPnl-chartPnl)/chartPeakPnl*100):0;
         const thesisCheck=config.thesisEnabled&&ageMin>=config.thesisExitMinAgeMin?evaluateThesisExit(p,s??{}):{failed:false,failures:[] as string[]};
         if(p.runnerMode!==runnerPlan.mode || (Date.now()-(p.runnerLastLogAt??0)>60000&&runnerPlan.mode!=="STANDARD")){p.runnerMode=runnerPlan.mode;p.runnerConfidence=runnerPlan.confidence;p.runnerLastLogAt=Date.now();log.info(`🧠🏃 RUNNER MODE | ${p.name} ($${p.symbol}) | ${runnerPlan.mode} ${runnerPlan.confidence.toFixed(0)}% | TP +${runnerPlan.tp.toFixed(0)}% | trail ${runnerPlan.trail.toFixed(0)}pt | max age ${runnerPlan.maxAge.toFixed(0)}m | B/S ${momentumRatio.toFixed(2)}x`);}
+        const added=await this.maybeAddConfirmedPosition(p,s??{},price,chartPnl,momentumRatio,momentumPrice);
+        if(added) continue;
+        const omoRunnerHold=config.omoStyleEnabled&&config.omoHoldStrongRunners&&momentumStrong&&(runnerPlan.mode!=="STANDARD"||chartPnl>=takeProfit);
 
         if (p.paper) {
           if (shouldLogStatus) this.logCurrentTrade(p, price, index, positions.length);
-          if (chartPnl >= takeProfit) await this.sell(p, `TAKE PROFIT ${chartPnl.toFixed(1)}%`, price);
+          if (chartPnl >= takeProfit && !omoRunnerHold) await this.sell(p, `TAKE PROFIT ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -hardStop) await this.sell(p, `HARD STOP ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -softStop && !momentumStrong) await this.sell(p, `MOMENTUM STOP ${chartPnl.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x`, price);
           else if (thesisCheck.failed && chartPnl<protectArm) await this.sell(p, `THESIS FAILED | ${thesisCheck.failures.join("; ")}`, price);
@@ -502,7 +527,7 @@ export class Trader {
           await this.sell(p, `FAST EXIT | executable value dropped ${quoteDropPct.toFixed(1)}% since last poll | REAL ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}%`, price, executable);
         }
         // 3) Take profit earlier, using what Jupiter can actually return—not the displayed token price.
-        else if (executable.pnlPct >= takeProfit) {
+        else if (executable.pnlPct >= takeProfit && !omoRunnerHold) {
           await this.sell(p, `TAKE PROFIT REAL +${executable.pnlPct.toFixed(1)}%`, price, executable);
         }
         // 4) Cut losers earlier on executable value.

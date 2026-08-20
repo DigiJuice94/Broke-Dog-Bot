@@ -1,0 +1,23 @@
+BROKE DOG BOT v1.18.0 — OMO-STYLE OPERATING MODEL
+
+Base: v1.17.1 Opportunity-Revival-Hotfix. All prior persistence, daily-loss, safety, route, AI failover, learning and opportunity fixes are retained.
+
+Core operating model:
+- Scan -> quick hard-safety/route check -> BUY EARLY or STALK -> ADD/HOLD/EXIT.
+- Dog Score is advisory; it can no longer be the sole boss of an entry.
+- OMO early entry uses multiple independent facts (demand, turnover, breadth, cycle, green price, absorption, acceleration).
+- Hard explicit on-chain danger, unavailable execution routes, collapsed liquidity and violent reversal remain vetoes.
+- STALK keeps exact thesis triggers and exact invalidations; invalidated stalks are abandoned.
+- One confirmation add is allowed by default only after the position is profitable and demand strengthens. Falling price alone never qualifies for an add.
+- Strong runners are not sold merely for touching the fixed TP while momentum remains strong; existing ratchets/thesis failures/stops still protect capital.
+- Existing Dog Brain persistent learning remains active.
+
+New optional Railway controls (defaults already work):
+OMO_STYLE_ENABLED=true
+OMO_MIN_SETUP_SIGNALS=3
+OMO_CONFIRMATION_ADDS=true
+OMO_MAX_ADDS=1
+OMO_ADD_PCT_OF_INITIAL=50
+OMO_HOLD_STRONG_RUNNERS=true
+
+No Railway variable is required for this update unless you want to override defaults.

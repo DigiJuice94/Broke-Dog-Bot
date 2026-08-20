@@ -15,8 +15,9 @@ async function main(){
   const wallet=new WalletService(),birdeye=new Birdeye(),jupiter=new Jupiter(wallet),trader=new Trader(wallet,jupiter);
   const scanner=new Scanner(birdeye,jupiter,c=>trader.buy(c));
   const emailReporter=new EmailReporter(trader);
-  log.info("🐶 BROKE DOG BOT v1.13.0 — AUTONOMOUS RUNNER BRAIN + MEMORY LOCK");
-  log.info(`Mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER TRADING"}`); log.info(`Wallet: ${wallet.address??"NOT CONFIGURED"}`);
+  log.info("🐶 BROKE DOG BOT v1.18.0 — OMO-STYLE OPERATING MODEL");
+  log.info(`Mode: ${config.liveTrading?"🔴 LIVE":"🧪 PAPER TRADING"}`);
+  log.info(`🐕 OMO STYLE: ${config.omoStyleEnabled?"ON":"OFF"} | scan → quick safety → BUY EARLY/STALK → ADD/HOLD/EXIT | score is advisory, hard danger + routes still gate`); log.info(`Wallet: ${wallet.address??"NOT CONFIGURED"}`);
   const adaptive=dogBrain.adaptiveSnapshot();
   log.info(`Entries: NORMAL base ≥${config.buyScore} / adaptive ≥${adaptive.buyScore} | ELITE ≥${config.eliteScore} | 🔥 FLAME ≥${config.flameMinScore} + early-runner pressure | observation ${(!config.liveTrading&&config.paperFastSafety?config.paperMinObservationMs:config.minObservationMs)/1000}-${config.maxObservationMs/1000}s`);
   if(!config.liveTrading&&config.paperFastSafety)log.info(`🛡️ PAPER FAST SAFETY: ONE gate | timeout ${config.safetyTimeoutMs}ms | cache ${Math.round(config.safetyCacheMs/1000)}s | hard veto only on explicit danger | route/deep enrichment do not block paper entries`);

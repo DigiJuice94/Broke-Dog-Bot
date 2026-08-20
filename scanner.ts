@@ -367,6 +367,29 @@ export class Scanner {
         && opportunitySignals>=config.opportunityRequireSignals
         && (!micro || micro.lateEntryRisk<=config.opportunityMaxLateEntryRisk)
         && (!micro || micro.scoreAcceleration>config.maxCollapseAcceleration || opportunityRevival);
+      // v1.18 OMO-style decision layer: score is context, not the boss.
+      // We enter when several independent market facts agree, while hard safety/routing remains non-negotiable.
+      const omoSignals=[
+        buySellRatio>=config.omoMinBuySellRatio,
+        volume1m>=config.omoMinVolume1mUsd,
+        Number(c.demandBreadthScore??0)>=config.omoMinDemandBreadth,
+        !!micro && ["WAKING","BUILDING","BREAKOUT","RUNNING"].includes(micro.state),
+        Number(snap.priceChange1mPct??snap.priceChange5mPct??0)>0,
+        !!opportunitySupply && opportunitySupply.absorptionScore>=config.omoMinAbsorption,
+        !!micro && (micro.buyerAccelerationPct>0 || micro.volumeAccelerationPct>0 || micro.structureBreak || micro.higherLow)
+      ].filter(Boolean).length;
+      const omoEarlyEntry=config.omoStyleEnabled
+        && age>=Math.min(requiredObservationMs,config.paperMinObservationMs)
+        && routesOK && !opportunityHardRisk && entryRisk.ok
+        && safetyScore>=config.omoMinSafetyScore
+        && safetyComplete>=config.omoMinSafetyCompleteness
+        && qualityScore>=config.omoMinQualityScore
+        && liq>=config.omoMinLiquidityUsd
+        && (!opportunitySupply || opportunitySupply.supplyPressure<=config.omoMaxSupplyPressure)
+        && (!opportunitySupply || opportunitySupply.absorptionScore>=config.omoMinAbsorption)
+        && omoSignals>=config.omoMinSetupSignals
+        && (!micro || micro.scoreAcceleration>config.maxCollapseAcceleration)
+        && (!micro || micro.lateEntryRisk<=config.opportunityMaxLateEntryRisk);
       const flame=config.flameEnabled
         && c.score>=config.flameMinScore
         && (c.runnerScore??0)>=config.flameMinRunnerScore
@@ -419,6 +442,10 @@ export class Scanner {
         c.state="READY"; c.entryLane="FLAME";
         c.decisionReason=`🔥 FLAME AUTO BUY | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | micro ${Math.round(micro?.score??0)} | RP ${Math.round(micro?.runnerProbability??0)} | B/S ${buySellRatio.toFixed(1)}x | vol $${Math.round(volume1m)} | ${flameRisk.why}`;
         log.info(`[🔥 FLAME] ${c.token.name} ($${c.token.symbol}) | AUTO BUY | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Quality:${Math.round(c.qualityScore??0)} Data:${Math.round(c.dataConfidence)}% B/S:${buySellRatio.toFixed(1)}x Vol:$${Math.round(volume1m)} Sources:${sourceCount}`);
+      } else if(omoEarlyEntry){
+        c.state="READY"; c.entryLane="EARLY";
+        c.decisionReason=`🐕 OMO EARLY BUY | ${omoSignals}/7 setup facts agree | score ${Math.round(c.score)} is advisory | B/S ${buySellRatio.toFixed(2)}x | vol $${Math.round(volume1m)} | breadth ${Math.round(c.demandBreadthScore??0)} | absorption ${Math.round(opportunitySupply?.absorptionScore??0)} | supply ${Math.round(opportunitySupply?.supplyPressure??0)}`;
+        log.info(`[🐕 OMO BUY] ${c.token.name} ($${c.token.symbol}) | BUY GOOD-ENOUGH + IMPROVING | Facts:${omoSignals}/7 Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Safety:${Math.round(safetyScore)}/${Math.round(safetyComplete)} Quality:${Math.round(qualityScore)} Liq:$${Math.round(liq)} B/S:${buySellRatio.toFixed(2)}x`);
       } else if(opportunityEntry){
         c.state="READY"; c.entryLane="EARLY";
         c.decisionReason=`⚡ ${opportunityRevival?"REVIVAL":"EARLY"} RUNNER BUY | opportunity-first | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | signals ${opportunitySignals}/${6} | B/S ${buySellRatio.toFixed(2)}x | vol $${Math.round(volume1m)} | breadth ${Math.round(c.demandBreadthScore??0)} | liq $${Math.round(liq)} | hard safety clear`;
