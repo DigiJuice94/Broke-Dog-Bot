@@ -46,6 +46,19 @@ function toToken(row:any, source:DiscoveredToken["source"], rank:number):Discove
     sellVolume1mUsd:n(row?.organic_volume_sell_1min,row?.volume_sell_1min),
     priceChange1mPct:n(row?.price_change_1min,row?.priceChange1min),
     priceChange5mPct:n(row?.price_change_5min,row?.priceChange5min),
+    priceChange1hPct:n(row?.price_change_1h,row?.priceChange1h),
+    priceChange6hPct:n(row?.price_change_6h,row?.priceChange6h),
+    organicBuyers5m:n(row?.organic_buyers_5min,row?.buyers_5min),
+    organicSellers5m:n(row?.organic_sellers_5min,row?.sellers_5min),
+    organicBuyers1h:n(row?.organic_buyers_1h,row?.organic_buyers_60min,row?.buyers_1h),
+    organicSellers1h:n(row?.organic_sellers_1h,row?.organic_sellers_60min,row?.sellers_1h),
+    sniperHoldingPct:n(t?.snipersHoldingsPercentage,row?.snipersHoldingsPercentage,row?.snipers_holdings_percentage),
+    insiderHoldingPct:n(t?.insidersHoldingsPercentage,row?.insidersHoldingsPercentage,row?.insiders_holdings_percentage),
+    bundlerHoldingPct:n(t?.bundlersHoldingsPercentage,row?.bundlersHoldingsPercentage,row?.bundlers_holdings_percentage),
+    devHoldingPct:n(t?.devHoldingsPercentage,row?.devHoldingsPercentage,row?.dev_holdings_percentage),
+    smartTraderHoldingPct:n(t?.smartTradersHoldingsPercentage,row?.smartTradersHoldingsPercentage,row?.smart_traders_holdings_percentage),
+    proTraderHoldingPct:n(t?.proTradersHoldingsPercentage,row?.proTradersHoldingsPercentage,row?.pro_traders_holdings_percentage),
+    freshTraderHoldingPct:n(t?.freshTradersHoldingsPercentage,row?.freshTradersHoldingsPercentage,row?.fresh_traders_holdings_percentage),
     uniqueWallet1m:n(row?.organic_buyers_1min,row?.buyers_1min),
     holderCount:n(t?.holdersCount,row?.holdersCount,row?.holders_count),
     top10HolderPct:top10,
@@ -68,8 +81,13 @@ export class MobulaAxiomDiscovery {
   private lastFetch=0;
   private cached:DiscoveredToken[]=[];
   private warnedMissing=false;
+  private cooldownUntil=0;
+  private consecutiveFailures=0;
+  private lastSuccessAt=0;
 
   enabled(){return Boolean(config.mobulaApiKey);}
+  available(){return this.enabled() && Date.now()>=this.cooldownUntil;}
+  status(){const now=Date.now();return {enabled:this.enabled(),available:this.available(),cached:this.cached.length>0,lastSuccessAt:this.lastSuccessAt,cacheAgeMs:this.lastSuccessAt?now-this.lastSuccessAt:Infinity,cooldownUntil:this.cooldownUntil};}
 
   async trending():Promise<DiscoveredToken[]>{
     if(!this.enabled()){
@@ -77,6 +95,7 @@ export class MobulaAxiomDiscovery {
       return [];
     }
     const now=Date.now();
+    if(now<this.cooldownUntil) return this.cached;
     if(this.cached.length && now-this.lastFetch<config.mobulaTrendingIntervalMs)return this.cached;
     this.lastFetch=now;
     const lim=Math.max(5,Math.min(50,config.mobulaTrendingLimit));
@@ -119,10 +138,16 @@ export class MobulaAxiomDiscovery {
       add(rowsForView(raw,"axiom-price"),"mobula-axiom-price");
       if(!out.length)log.warn("[MOBULA] Pulse returned no Axiom-style tokens; verify plan/key or response shape.");
       else log.info(`[MOBULA] Axiom-style trending: ${out.length} ranked signals received`);
-      this.cached=out;
+      this.cached=out; this.lastSuccessAt=Date.now(); this.consecutiveFailures=0; this.cooldownUntil=0;
       return out;
     }catch(e){
-      log.warn(`[MOBULA] Axiom-style trending unavailable: ${e instanceof Error?e.message:String(e)}`);
+      const msg=(e instanceof Error?e.message:String(e)).toLowerCase();
+      this.consecutiveFailures++;
+      if(msg.includes("429")||msg.includes("rate")||msg.includes("quota")||msg.includes("credit")||msg.includes("too many")){
+        const backoff=Math.min(config.mobulaMaxCooldownMs,config.mobulaCooldownMs*Math.max(1,2**(this.consecutiveFailures-1)));
+        this.cooldownUntil=Date.now()+backoff;
+        log.warn(`[MOBULA] free-tier cooldown ${Math.round(backoff/60000)}m — using cached/DEX intelligence`);
+      } else log.warn(`[MOBULA] Axiom-style trending unavailable: ${e instanceof Error?e.message:String(e)}`);
       return this.cached;
     }
   }

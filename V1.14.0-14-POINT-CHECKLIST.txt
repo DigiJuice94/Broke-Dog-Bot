@@ -1,0 +1,24 @@
+BROKE DOG BOT v1.14.0 — VERIFIED 14-POINT CORRECTION CHECKLIST
+Base: v1.13.0 Autonomous Runner Brain Memory Lock
+
+[1] Entry timing: decelerating score/momentum is penalized; NORMAL requires confirmation.
+[2] Liquidity: stronger scoring weight + NORMAL $25k minimum + stricter very-young minimum.
+[3] Component gates: high Runner/Dog score cannot override Safety/Quality minimums.
+[4] Safety unknowns: independent Safety Score + Safety Data Completeness; NORMAL Safety >=80.
+[5] Very-young/incomplete setups: <2m requires Safety >=85, completeness >=80%, liquidity >=$30k.
+[6] Price/data normalization: finalist DEX cross-check canonicalizes price/MC/liquidity when sources disagree.
+[7] Route gating: paper and live now require verified buy route and required sell route.
+[8] Flow quality: raw B/S weighting reduced; unique-wallet breadth, wallet growth and dollar flow emphasized.
+[9] Winner protection: profitable peaks now trigger progressive ratcheting floors.
+[10] Peak-floor execution: exit polling reduced from 5s to 2s and old static +2% floor replaced by ratchet.
+[11] Progressive profit ratchet: +5=>+0.5, +10=>+4, +15=>+8, +20=>+12, +30=>+18, +50=>+28 target floors.
+[12] Asset timing: established tokens can use at least 30m max-age vs micro-cap runner timing.
+[13] Very-young lane: stronger safety/liquidity applies to NORMAL and FLAME; no broad safety loosening.
+[14] Structure confirmation: NORMAL confirmation favors structure break/higher low or coordinated buyer+volume acceleration.
+
+Additional preservation check:
+- Dog Brain persistent files/state paths unchanged.
+- Paper/live wallet state persistence unchanged.
+- Paper daily loss default remains $50.
+- Live daily loss default restored/preserved at $50.
+- No new environment variables are required; all v1.14 settings have defaults.

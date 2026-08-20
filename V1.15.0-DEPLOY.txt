@@ -1,0 +1,14 @@
+BROKE DOG BOT v1.15.0 — DOG THESIS / STALKING / ABSORPTION
+
+Base: v1.14.0 14-Point Correction. All v1.14 fixes preserved.
+
+Adds:
+- STALKING candidate state with measurable stored entry triggers.
+- Supply Pressure + Absorption scoring.
+- Dog Thesis BUY / STALK / REFUSE decisions.
+- Bull case, counter-case, entry trigger, and invalidation persisted into trade forensics.
+- Thesis-based exits when multiple original assumptions fail.
+- Paid DEX boost attention separated from organic social confirmation.
+- Dog Brain records STALKING outcomes for missed-runner/refusal learning.
+
+No new Railway variables are required; defaults are built in. Keep PAPER mode on for evaluation.

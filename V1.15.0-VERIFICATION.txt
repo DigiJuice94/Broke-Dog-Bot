@@ -1,0 +1,37 @@
+BROKE DOG BOT v1.15.0 — VERIFICATION
+Base: v1.14.0 14-Point Correction
+
+PRESERVED FROM v1.14
+[OK] Safety >=80 + Safety Data Completeness gate
+[OK] Liquidity weighting/minimums
+[OK] Component gates
+[OK] Price-integrity cross-check
+[OK] Paper/live route gating
+[OK] Buyer breadth over raw B/S
+[OK] Momentum acceleration/deceleration protection
+[OK] Very-young token safeguards
+[OK] Higher-low/structure confirmation
+[OK] Progressive profit ratchet
+[OK] 2-second position polling default
+[OK] Established-token time handling
+[OK] Persistent Dog Brain/wallet state paths unchanged
+[OK] $50 paper / $50 live daily-loss defaults preserved
+
+NEW v1.15 SYSTEMS
+[OK] STALKING state with stored measurable triggers
+[OK] Supply Pressure score
+[OK] Absorption score
+[OK] Dog Thesis BUY / STALK / REFUSE
+[OK] Bull case + counter-case
+[OK] Entry trigger + invalidation conditions
+[OK] Paid boost separated from organic attention
+[OK] Thesis stored in entry forensics
+[OK] STALKING state persisted into Dog Brain learning records
+[OK] Stalking duration recorded when a stalk converts to a buy
+[OK] Thesis-based early exits after multiple thesis failures
+[OK] Existing runner/profit protection remains active
+
+VALIDATION
+- TypeScript syntax transpilation: PASS across all .ts files.
+- Semantic TypeScript check on all changed v1.15 files: zero errors.
+- Full dependency-aware tsc cannot complete in this environment because npm dependencies are not installed; unrelated base-project missing-module errors remain.

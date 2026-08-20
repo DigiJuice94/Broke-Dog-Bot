@@ -10,6 +10,7 @@ import { SolPriceService } from "./solPrice.ts";
 import { socialPerformance } from "./socialPerformance.ts";
 import { migrateLegacyFile, readJsonRecovered, writeJsonAtomic } from "./persistence.ts";
 import { dogBrain } from "./dogBrain.ts";
+import { evaluateThesisExit } from "./thesis.ts";
 
 type ClosedTrack={mint:string;name:string;symbol:string;entryPriceUsd:number;exitPriceUsd:number;entryUsd?:number;exitPnlPct:number;peakPnlPct:number;peakGivebackPct:number;closedAt:number;openedAt?:number;exitReason?:string;entryAnalysis?:TradeEntryAnalysis;logged:Set<number>;socialAccounts:string[]};
 
@@ -116,11 +117,24 @@ export class Trader {
   private positionsArrayPaperCost(){ let total=0; for(const p of this.positions.values())if(p.paper)total+=p.entryUsd; return total; }
   private entryAnalysis(c:Candidate):TradeEntryAnalysis{
     const s=c.snapshots.at(-1)!; const risk=s.onChainRisk; const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;
-    return {score:c.score,runnerScore:c.runnerScore,qualityScore:c.qualityScore,confidence:c.dataConfidence,marketScore:c.marketScore,socialScore:c.socialScore,safetyScore:c.safetyScore,microCycle:c.microCycle,liquidityUsd:s.liquidityUsd,marketCapUsd:s.marketCapUsd,holderCount:s.holderCount,uniqueWallet1m:s.uniqueWallet1m,volume1mUsd:s.volume1mUsd,volume5mUsd:s.volume5mUsd,buys1m:s.buys1m,sells1m:s.sells1m,buyVolume1mUsd:s.buyVolume1mUsd,sellVolume1mUsd:s.sellVolume1mUsd,priceChange1mPct:s.priceChange1mPct,priceChange5mPct:s.priceChange5mPct,top1Pct:risk?.top1Pct,top5Pct:risk?.top5Pct,top10Pct:risk?.top10Pct??s.top10HolderPct,bundleRisk:risk?.bundleRisk,holderRisk:risk?.holderRisk,devRisk:risk?.devRisk,linkedSupplyPct:risk?.estimatedLinkedSupplyPct,smartMoneyScore:s.smartMoney?.score,socialAccounts:s.social?.keyAccounts??[],dominantMeta:s.social?.dominantMeta??[],metaRunner:c.metaRunner,sources:[...c.sources],tokenAgeMin:age,routeQuality:s.routeQuality,buyRoute:s.buyRoute,sellRoute:s.sellRoute,routeQuotedAt:s.routeQuotedAt,routeRoundTripPct:s.routeRoundTripPct,routeRouter:s.routeRouter,routeMode:s.routeMode,routeFeeBps:s.routeFeeBps,sourceFirstSeenAt:Object.fromEntries(Object.entries(c.sourceFirstSeenAt??{}).map(([k,v])=>[k,Number(v)])),firstBuyScoreAt:c.firstBuyScoreAt,decisionAt:Date.now(),missingFields:[s.routeQuality==null?"routeQuality":null,s.onChainRisk==null?"onChainRisk":null,s.onChainRisk?.top10Pct==null&&s.top10HolderPct==null?"top10HolderPct":null,s.bundleStatus==="unknown"||s.bundleStatus==="skipped"?"bundleSignal":null].filter(Boolean) as string[]};
+    return {score:c.score,runnerScore:c.runnerScore,qualityScore:c.qualityScore,confidence:c.dataConfidence,marketScore:c.marketScore,socialScore:c.socialScore,safetyScore:c.safetyScore,safetyCompleteness:c.safetyCompleteness,demandBreadthScore:c.demandBreadthScore,microCycle:c.microCycle,liquidityUsd:s.liquidityUsd,marketCapUsd:s.marketCapUsd,holderCount:s.holderCount,uniqueWallet1m:s.uniqueWallet1m,volume1mUsd:s.volume1mUsd,volume5mUsd:s.volume5mUsd,buys1m:s.buys1m,sells1m:s.sells1m,buyVolume1mUsd:s.buyVolume1mUsd,sellVolume1mUsd:s.sellVolume1mUsd,priceChange1mPct:s.priceChange1mPct,priceChange5mPct:s.priceChange5mPct,top1Pct:risk?.top1Pct,top5Pct:risk?.top5Pct,top10Pct:risk?.top10Pct??s.top10HolderPct,bundleRisk:risk?.bundleRisk,holderRisk:risk?.holderRisk,devRisk:risk?.devRisk,linkedSupplyPct:risk?.estimatedLinkedSupplyPct,smartMoneyScore:s.smartMoney?.score,socialAccounts:s.social?.keyAccounts??[],dominantMeta:s.social?.dominantMeta??[],metaRunner:c.metaRunner,sources:[...c.sources],tokenAgeMin:age,routeQuality:s.routeQuality,buyRoute:s.buyRoute,sellRoute:s.sellRoute,routeQuotedAt:s.routeQuotedAt,routeRoundTripPct:s.routeRoundTripPct,routeRouter:s.routeRouter,routeMode:s.routeMode,routeFeeBps:s.routeFeeBps,sourceFirstSeenAt:Object.fromEntries(Object.entries(c.sourceFirstSeenAt??{}).map(([k,v])=>[k,Number(v)])),firstBuyScoreAt:c.firstBuyScoreAt,decisionAt:Date.now(),thesis:c.thesis,missingFields:[s.routeQuality==null?"routeQuality":null,s.onChainRisk==null?"onChainRisk":null,s.onChainRisk?.top10Pct==null&&s.top10HolderPct==null?"top10HolderPct":null,s.bundleStatus==="unknown"||s.bundleStatus==="skipped"?"bundleSignal":null].filter(Boolean) as string[]};
   }
   private appendPaperLedger(entry:any){
     try{ migrateLegacyFile(config.paperLedgerFile,"broke-dog-paper-ledger.json"); let ledger:any[]=readJsonRecovered<any[]>(config.paperLedgerFile)??[]; if(!Array.isArray(ledger))ledger=[]; ledger.push(entry); writeJsonAtomic(config.paperLedgerFile,ledger); }
     catch(e){ log.warn(`[PAPER LEDGER] save failed: ${e instanceof Error?e.message:String(e)}`); }
+  }
+  private protectedFloorPct(peakPct:number){
+    if(peakPct>=50)return 28;
+    if(peakPct>=30)return 18;
+    if(peakPct>=20)return 12;
+    if(peakPct>=15)return 8;
+    if(peakPct>=10)return 4;
+    if(peakPct>=5)return 0.5;
+    return -Infinity;
+  }
+  private isEstablishedPosition(p:Position){
+    const a=p.entryAnalysis;
+    return Number(a?.marketCapUsd??0)>=50_000_000 || Number(a?.tokenAgeMin??0)>=7*24*60;
   }
   async initialize(){ this.loadState(); await this.reconcileWallet(true); if(!config.liveTrading)this.logPaperWallet(undefined,true); }
   private async reconcileWallet(force=false){
@@ -444,9 +458,10 @@ export class Trader {
         const softStop=learnedThresholds.softStop;
         const protectArm=runnerPlan.protect;
         const trail=runnerPlan.trail;
-        const maxAge=runnerPlan.maxAge;
+        const maxAge=this.isEstablishedPosition(p)?Math.max(runnerPlan.maxAge,config.establishedPositionAgeMin):runnerPlan.maxAge;
         const peakGivebackExit=runnerPlan.giveback;
         const chartPeakGivebackPct=chartPeakPnl>0?Math.max(0,(chartPeakPnl-chartPnl)/chartPeakPnl*100):0;
+        const thesisCheck=config.thesisEnabled&&ageMin>=config.thesisExitMinAgeMin?evaluateThesisExit(p,s??{}):{failed:false,failures:[] as string[]};
         if(p.runnerMode!==runnerPlan.mode || (Date.now()-(p.runnerLastLogAt??0)>60000&&runnerPlan.mode!=="STANDARD")){p.runnerMode=runnerPlan.mode;p.runnerConfidence=runnerPlan.confidence;p.runnerLastLogAt=Date.now();log.info(`🧠🏃 RUNNER MODE | ${p.name} ($${p.symbol}) | ${runnerPlan.mode} ${runnerPlan.confidence.toFixed(0)}% | TP +${runnerPlan.tp.toFixed(0)}% | trail ${runnerPlan.trail.toFixed(0)}pt | max age ${runnerPlan.maxAge.toFixed(0)}m | B/S ${momentumRatio.toFixed(2)}x`);}
 
         if (p.paper) {
@@ -454,7 +469,8 @@ export class Trader {
           if (chartPnl >= takeProfit) await this.sell(p, `TAKE PROFIT ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -hardStop) await this.sell(p, `HARD STOP ${chartPnl.toFixed(1)}%`, price);
           else if (chartPnl <= -softStop && !momentumStrong) await this.sell(p, `MOMENTUM STOP ${chartPnl.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x`, price);
-          else if (chartPeakPnl >= config.peakProfitArmPct && chartPnl <= config.peakProfitFloorPct) await this.sell(p, `PEAK FLOOR | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | floor +${config.peakProfitFloorPct}%`, price);
+          else if (thesisCheck.failed && chartPnl<protectArm) await this.sell(p, `THESIS FAILED | ${thesisCheck.failures.join("; ")}`, price);
+          else if (Number.isFinite(this.protectedFloorPct(chartPeakPnl)) && chartPnl <= this.protectedFloorPct(chartPeakPnl)) await this.sell(p, `PROFIT RATCHET | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | protected +${this.protectedFloorPct(chartPeakPnl).toFixed(1)}%`, price);
           else if (chartPeakPnl >= config.peakProfitArmPct && chartPeakGivebackPct >= peakGivebackExit) await this.sell(p, `PEAK GIVEBACK | peak +${chartPeakPnl.toFixed(1)}% → ${chartPnl>=0?"+":""}${chartPnl.toFixed(1)}% | gave back ${chartPeakGivebackPct.toFixed(0)}%`, price);
           else if (chartPnl >= protectArm && chartDrawdown <= -trail) await this.sell(p, `PROFIT PROTECT ${chartDrawdown.toFixed(1)}% from high`, price);
           else if (ageMin >= maxAge) await this.sell(p, `TIME EXIT ${ageMin.toFixed(1)}m`, price);
@@ -497,9 +513,12 @@ export class Trader {
         else if (executable.pnlPct <= -softStop && !momentumStrong) {
           await this.sell(p, `MOMENTUM STOP REAL ${executable.pnlPct.toFixed(1)}% | B/S ${momentumRatio.toFixed(2)}x | price momentum ${momentumPrice.toFixed(1)}%`, price, executable);
         }
+        else if (thesisCheck.failed && executable.pnlPct<protectArm) {
+          await this.sell(p, `THESIS FAILED REAL | ${thesisCheck.failures.join("; ")}`, price, executable);
+        }
         // 5) Peak-profit ratchet: once +10% real profit has existed, protect a +2% floor and exit after 70% of the peak gain is surrendered.
-        else if (peakExecutable >= config.peakProfitArmPct && executable.pnlPct <= config.peakProfitFloorPct) {
-          await this.sell(p, `PEAK FLOOR REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | floor +${config.peakProfitFloorPct}%`, price, executable);
+        else if (Number.isFinite(this.protectedFloorPct(peakExecutable)) && executable.pnlPct <= this.protectedFloorPct(peakExecutable)) {
+          await this.sell(p, `PROFIT RATCHET REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | protected +${this.protectedFloorPct(peakExecutable).toFixed(1)}%`, price, executable);
         }
         else if (peakExecutable >= config.peakProfitArmPct && executablePeakGivebackPct >= peakGivebackExit) {
           await this.sell(p, `PEAK GIVEBACK REAL | peak +${peakExecutable.toFixed(1)}% → ${executable.pnlPct>=0?"+":""}${executable.pnlPct.toFixed(1)}% | gave back ${executablePeakGivebackPct.toFixed(0)}%`, price, executable);

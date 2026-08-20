@@ -1,0 +1,18 @@
+BROKE DOG BOT v1.16.0 — OMO INTELLIGENCE + FREE-TIER BUDGET
+
+BASE: v1.15 Dog Thesis/Stalking, itself built on v1.14 14-Point Correction.
+
+NEW:
+- FULL / DEGRADED / CORE intelligence modes
+- Birdeye CU reserve: broad discovery backs off before consuming finalist reserve
+- Mobula rate-limit/quota cooldown with exponential backoff + cached fallback
+- Expanded Mobula extraction: longer-timeframe organic buyer/seller context and wallet-cohort holdings when returned
+- Expanded Birdeye top-trader extraction: buy/sell dollars, remaining value, average P&L, profitable wallets, distribution score when returned
+- Supply Pressure now consumes early-wallet/cohort and distribution evidence
+- Absorption now consumes organic buyer/seller context
+- Thesis confidence is reduced when data coverage is degraded
+- CORE mode requires stronger absorption / lower supply pressure / higher confidence
+- FLAME has additional CORE-mode restrictions
+- STALKING remains the preferred state when enrichment is unavailable instead of assuming safety
+
+NO NEW API KEY IS REQUIRED. Existing keys continue to work. New env variables are optional defaults.

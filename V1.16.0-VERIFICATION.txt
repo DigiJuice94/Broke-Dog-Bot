@@ -1,0 +1,34 @@
+BROKE DOG BOT v1.16.0 — VERIFICATION
+
+BASE PRESERVATION
+[OK] v1.14 14-point corrections preserved
+[OK] v1.15 Dog Thesis / BUY-STALK-REFUSE preserved
+[OK] Supply Pressure / Absorption preserved and expanded
+[OK] Thesis-based exits preserved
+[OK] Progressive profit ratchet preserved
+[OK] Safety >=80 + completeness gate preserved
+[OK] Paper/live route gating preserved
+[OK] Persistent Dog Brain and wallet paths unchanged
+[OK] $50 paper / $50 live daily-loss defaults preserved
+
+NEW v1.16
+[OK] FULL/DEGRADED/CORE intelligence state
+[OK] Candidate-level data coverage included in Dog Thesis
+[OK] Birdeye free-tier reserve protection
+[OK] Birdeye deep calls reserved for strongest candidates while budget is healthy
+[OK] Birdeye discovery pauses before consuming reserved CU
+[OK] Mobula quota/rate-limit cooldown + cached fallback
+[OK] Mobula cooldown escalates on repeated quota failures
+[OK] Longer-timeframe organic flow extraction when present
+[OK] Sniper/insider/bundler/dev/smart/pro/fresh cohort holding extraction when present
+[OK] Birdeye top-trader buy/sell volume and distribution extraction when present
+[OK] Supply-pressure score uses cohort/distribution evidence
+[OK] Absorption uses organic buyer/seller evidence
+[OK] Missing premium intelligence lowers thesis confidence rather than silently passing
+[OK] CORE mode requires stronger thesis conditions
+[OK] FLAME cannot freely bypass CORE-mode data loss
+
+VALIDATION
+- TypeScript semantic scan of changed code: no project-local type/syntax errors.
+- Expected environment-only errors for absent node_modules/@types were filtered during noResolve validation.
+- Full dependency-aware npm check is not available in this container because project dependencies are not installed.

@@ -1,3 +1,7 @@
+# v1.16.0 — OMO-style Thesis Intelligence + Free-Tier Survival
+
+This build preserves the v1.14 14-point correction and v1.15 thesis/stalking behavior, then adds API-budget-aware FULL/DEGRADED/CORE intelligence. Birdeye and Mobula are treated as enrichment sources, not single points of failure. Missing premium data lowers confidence and usually moves a candidate to STALK rather than being treated as a passed check.
+
 # Broke Dog Bot v1.13.0 — Autonomous Runner Brain + Memory Lock
 
 ## What changed in v1.13.0
