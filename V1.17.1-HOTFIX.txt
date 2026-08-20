@@ -1,0 +1,9 @@
+BROKE DOG BOT v1.17.1 — OPPORTUNITY REVIVAL HOTFIX
+
+- Fixes the v1.17 age-window bottleneck. OPPORTUNITY_MAX_AGE_MIN no longer kills opportunity-first behavior by itself.
+- Adds age-independent REVIVAL entries for WAKING/BUILDING/BREAKOUT/RUNNING tokens with strong current demand.
+- Revival defaults: score >=75, runner >=70, B/S >=2x, 1m volume >=$1,000, absorption >=55, supply pressure <=60.
+- Strong current demand can substitute for missing higher-low/structure-reclaim/positive-acceleration history.
+- Jupiter buy/sell routing, liquidity, baseline safety/quality, hard dev/holder/bundle vetoes, late-entry ceiling, and paper sizing remain intact.
+- EARLY/REVIVAL remains paper-only by default. Live opportunity-first remains OFF unless explicitly enabled.
+- Existing persistence, Dog Brain learning, OMO intelligence budget, $50 paper/live daily loss caps, and prior fixes are preserved.

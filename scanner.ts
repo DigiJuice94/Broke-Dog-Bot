@@ -336,14 +336,27 @@ export class Scanner {
         Number(c.runnerScore??0)>=config.opportunityMinRunnerScore
       ].filter(Boolean).length;
       const opportunityHardRisk= snap.onChainRisk?.devRisk==="high" || snap.onChainRisk?.holderRisk==="high" || snap.onChainRisk?.bundleRisk==="high";
+      // v1.17.1: opportunity-first must not disappear merely because a token is older than the launch window.
+      // A strong WAKING/BUILDING/BREAKOUT/RUNNING revival can qualify at any age. This deliberately
+      // substitutes strong CURRENT demand + absorption for missing acceleration history/structure proof.
+      const revivalState=!!micro && ["WAKING","BUILDING","BREAKOUT","RUNNING"].includes(micro.state);
+      const opportunityRevival=config.opportunityRevivalEnabled
+        && c.score>=config.opportunityRevivalMinScore
+        && Number(c.runnerScore??0)>=config.opportunityRevivalMinRunnerScore
+        && buySellRatio>=config.opportunityRevivalMinBuySellRatio
+        && volume1m>=config.opportunityRevivalMinVolume1mUsd
+        && revivalState
+        && (!opportunitySupply || opportunitySupply.absorptionScore>=config.opportunityRevivalMinAbsorption)
+        && (!opportunitySupply || opportunitySupply.supplyPressure<=config.opportunityRevivalMaxSupplyPressure);
+      const opportunityAgeOK=tokenAgeMin<=config.opportunityMaxAgeMin || opportunityRevival;
       const opportunityEntry=opportunityLaneEnabled
         && age>=Math.min(requiredObservationMs,config.paperMinObservationMs)
-        && tokenAgeMin<=config.opportunityMaxAgeMin
+        && opportunityAgeOK
         && c.score>=config.opportunityMinScore
         && Number(c.runnerScore??0)>=config.opportunityMinRunnerScore
         && c.dataConfidence>=config.opportunityMinDataConfidence
         && routesOK
-        && entryRisk.ok
+        && (entryRisk.ok || opportunityRevival)
         && !opportunityHardRisk
         && safetyScore>=config.opportunityMinSafetyScore
         && safetyComplete>=config.opportunityMinSafetyCompleteness
@@ -353,7 +366,7 @@ export class Scanner {
         && (!opportunitySupply || opportunitySupply.absorptionScore>=config.opportunityMinAbsorption)
         && opportunitySignals>=config.opportunityRequireSignals
         && (!micro || micro.lateEntryRisk<=config.opportunityMaxLateEntryRisk)
-        && (!micro || micro.scoreAcceleration>config.maxCollapseAcceleration);
+        && (!micro || micro.scoreAcceleration>config.maxCollapseAcceleration || opportunityRevival);
       const flame=config.flameEnabled
         && c.score>=config.flameMinScore
         && (c.runnerScore??0)>=config.flameMinRunnerScore
@@ -408,8 +421,8 @@ export class Scanner {
         log.info(`[🔥 FLAME] ${c.token.name} ($${c.token.symbol}) | AUTO BUY | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Quality:${Math.round(c.qualityScore??0)} Data:${Math.round(c.dataConfidence)}% B/S:${buySellRatio.toFixed(1)}x Vol:$${Math.round(volume1m)} Sources:${sourceCount}`);
       } else if(opportunityEntry){
         c.state="READY"; c.entryLane="EARLY";
-        c.decisionReason=`⚡ EARLY RUNNER BUY | opportunity-first | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | signals ${opportunitySignals}/${6} | B/S ${buySellRatio.toFixed(2)}x | vol $${Math.round(volume1m)} | breadth ${Math.round(c.demandBreadthScore??0)} | liq $${Math.round(liq)} | hard safety clear`;
-        log.info(`[⚡ EARLY RUNNER] ${c.token.name} ($${c.token.symbol}) | BUY BEFORE PERFECT | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Signals:${opportunitySignals}/6 Safety:${Math.round(safetyScore)}/${Math.round(safetyComplete)} Quality:${Math.round(qualityScore)} Liq:$${Math.round(liq)} B/S:${buySellRatio.toFixed(2)}x`);
+        c.decisionReason=`⚡ ${opportunityRevival?"REVIVAL":"EARLY"} RUNNER BUY | opportunity-first | score ${Math.round(c.score)} | runner ${Math.round(c.runnerScore??0)} | signals ${opportunitySignals}/${6} | B/S ${buySellRatio.toFixed(2)}x | vol $${Math.round(volume1m)} | breadth ${Math.round(c.demandBreadthScore??0)} | liq $${Math.round(liq)} | hard safety clear`;
+        log.info(`[⚡ ${opportunityRevival?"REVIVAL":"EARLY"} RUNNER] ${c.token.name} ($${c.token.symbol}) | BUY BEFORE PERFECT | Score:${Math.round(c.score)} Runner:${Math.round(c.runnerScore??0)} Signals:${opportunitySignals}/6 Safety:${Math.round(safetyScore)}/${Math.round(safetyComplete)} Quality:${Math.round(qualityScore)} Liq:$${Math.round(liq)} B/S:${buySellRatio.toFixed(2)}x`);
       } else if(normalEntry){
         c.state="READY"; c.entryLane=c.score>=config.eliteScore?"ELITE":"NORMAL";
         const aiNote=aiDecision?.ok?` | 🤖 AI ${aiDecision.verdict} ${aiDecision.confidence}%${aiPromote?" PROMOTED":""}`:aiDecision?.budgetReason?` | 🤖 AI FALLBACK (${aiDecision.budgetReason})`:"";
