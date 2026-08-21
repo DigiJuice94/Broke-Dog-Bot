@@ -19,18 +19,18 @@ export class Jupiter {
     return await this.queue.schedule(() => getJson(`${BASE}/order?${q}`, headers(), 10_000)) as SwapOrder;
   }
 
-  async canBuyAndSell(mint: string, solLamports = 5_000_000n): Promise<{buy:boolean;sell:boolean;quality:number;buyOutRaw?:bigint;quotedAt:number;roundTripPct?:number;router?:string;mode?:string;feeBps?:number}> {
+  async canBuyAndSell(mint: string, solLamports = 5_000_000n): Promise<{buy:boolean;sell:boolean;quality:number;buyOutRaw?:bigint}> {
     try {
       const buy = await this.order(SOL_MINT, mint, solLamports, false);
       const out = BigInt(buy.outAmount || "0");
-      if (out <= 0n) return { buy: false, sell: false, quality: 0, quotedAt:Date.now() };
+      if (out <= 0n) return { buy: false, sell: false, quality: 0 };
       try {
         const sell = await this.order(mint, SOL_MINT, out, false);
         const back = BigInt(sell.outAmount || "0");
         const quality = Number(back * 10000n / solLamports) / 100;
-        return { buy: true, sell: back > 0n, quality: Math.max(0, Math.min(100, quality)), buyOutRaw: out, quotedAt:Date.now(), roundTripPct:quality, router:String(sell.router??buy.router??""), mode:String(sell.mode??buy.mode??""), feeBps:Number(sell.feeBps??buy.feeBps??0) };
-      } catch { return { buy: true, sell: false, quality: 20, buyOutRaw: out, quotedAt:Date.now(), router:String(buy.router??""), mode:String(buy.mode??""), feeBps:Number(buy.feeBps??0) }; }
-    } catch { return { buy: false, sell: false, quality: 0, quotedAt:Date.now() }; }
+        return { buy: true, sell: back > 0n, quality: Math.max(0, Math.min(100, quality)), buyOutRaw: out };
+      } catch { return { buy: true, sell: false, quality: 20, buyOutRaw: out }; }
+    } catch { return { buy: false, sell: false, quality: 0 }; }
   }
 
   /** Primary SOL/USD oracle: derive USD from a real Jupiter SOL→USDC route. */

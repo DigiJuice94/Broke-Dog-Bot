@@ -1,25 +1,23 @@
-import { migrateLegacyFile, persistenceMode, readJsonRecovered, writeJsonAtomic } from "./persistence.ts";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { config } from "./config.ts";
 import { Candidate, EntryLane, Position } from "./types.ts";
 import { DexScreener } from "./dexscreener.ts";
 import { log } from "./log.ts";
 
 type LaneProfile="NORMAL"|"FLAME";
-type FeatureName="buyPressure"|"volumeMomentum"|"priceMomentum"|"liquidity"|"earlyAge"|"multiSource"|"socialHeat"|"routeQuality"|"bundleSafety"|"microCycle"|"runnerProbability"|"scoreVelocity"|"lateEntrySafety"|"structureBreak";
+type FeatureName="buyPressure"|"volumeMomentum"|"priceMomentum"|"liquidity"|"earlyAge"|"multiSource"|"socialHeat"|"routeQuality"|"bundleSafety";
 type FeatureVector=Record<FeatureName,number>;
 type OutcomePoint={minute:number;at:number;priceUsd:number;returnPct:number};
-type ExitOutcomePoint={minute:number;at:number;priceUsd:number;returnFromEntryPct:number;returnFromExitPct:number};
 type LearningRecord={
-  mint:string;name:string;symbol:string;lane:LaneProfile;mode?:"PAPER"|"LIVE";decision:"WATCHING"|"STALKING"|"REJECTED"|"BOUGHT";
+  mint:string;name:string;symbol:string;lane:LaneProfile;mode?:"PAPER"|"LIVE";decision:"WATCHING"|"REJECTED"|"BOUGHT";
   decisionReason?:string;firstSeenAt:number;decisionAt:number;baselinePriceUsd:number;score:number;confidence:number;
   features:FeatureVector;outcomes:OutcomePoint[];maxReturnPct:number;minReturnPct:number;resolved:boolean;
-  tradeExitPct?:number;tradeExitReason?:string;tradeClosedAt?:number;tradeExitPriceUsd?:number;tradePeakPct?:number;tradePeakGivebackPct?:number;postExitOutcomes?:ExitOutcomePoint[];
-  sourceFirstSeenAt?:Record<string,number>;firstBuyScoreAt?:number;decisionSnapshot?:any;missingFields?:string[];exitCounterfactuals?:Record<string,number|string|boolean>;
+  tradeExitPct?:number;tradeExitReason?:string;tradeClosedAt?:number;
 };
-type AdaptiveState={buyScoreOffset:number;confidenceOffset:number;hardStopOffset:number;softStopOffset:number;runnerPatience:number;lastTuneClosedTrades:number;adaptations:number;lastAdaptAt:number;history:{at:number;change:string;evidence:string}[]};
-type BrainState={version:number;day:string;weights:Record<LaneProfile,Record<FeatureName,number>>;dailyMovement:Record<LaneProfile,Record<FeatureName,number>>;samples:Record<LaneProfile,number>;records:LearningRecord[];lastReportAt:number;lastLearnAt:number;rollbacks:number;baselinePaperMetric?:number;adaptive:AdaptiveState;};
+type BrainState={version:number;day:string;weights:Record<LaneProfile,Record<FeatureName,number>>;dailyMovement:Record<LaneProfile,Record<FeatureName,number>>;samples:Record<LaneProfile,number>;records:LearningRecord[];lastReportAt:number;lastLearnAt:number;rollbacks:number;baselinePaperMetric?:number;};
 
-const FEATURES:FeatureName[]=["buyPressure","volumeMomentum","priceMomentum","liquidity","earlyAge","multiSource","socialHeat","routeQuality","bundleSafety","microCycle","runnerProbability","scoreVelocity","lateEntrySafety","structureBreak"];
+const FEATURES:FeatureName[]=["buyPressure","volumeMomentum","priceMomentum","liquidity","earlyAge","multiSource","socialHeat","routeQuality","bundleSafety"];
 const zeroWeights=()=>Object.fromEntries(FEATURES.map(k=>[k,0])) as Record<FeatureName,number>;
 const clamp=(v:number,a=-1,b=1)=>Math.max(a,Math.min(b,v));
 const day=()=>new Date().toISOString().slice(0,10);
@@ -29,34 +27,46 @@ class DogBrain {
   private state:BrainState=this.blank();
   private loaded=false;
   private busy=false;
+  private memoryLoaded=false;
+  private memorySource="fresh";
 
-  private blank():BrainState{return {version:2,day:day(),weights:{NORMAL:zeroWeights(),FLAME:zeroWeights()},dailyMovement:{NORMAL:zeroWeights(),FLAME:zeroWeights()},samples:{NORMAL:0,FLAME:0},records:[],lastReportAt:0,lastLearnAt:0,rollbacks:0,adaptive:{buyScoreOffset:0,confidenceOffset:0,hardStopOffset:0,softStopOffset:0,runnerPatience:0,lastTuneClosedTrades:0,adaptations:0,lastAdaptAt:0,history:[]}};}
-  private ensureLoaded(){if(this.loaded)return;this.loaded=true;try{const migrated=migrateLegacyFile(config.dogBrainFile,"broke-dog-brain-v1.json");if(migrated)log.info(`[🧠 DOG BRAIN] migrated legacy memory -> ${config.dogBrainFile}`);const x=readJsonRecovered<any>(config.dogBrainFile);if(x){const b=this.blank();this.state={...b,...x,version:2,weights:{NORMAL:{...zeroWeights(),...(x.weights?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.weights?.FLAME??{})}},dailyMovement:{NORMAL:{...zeroWeights(),...(x.dailyMovement?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.dailyMovement?.FLAME??{})}},adaptive:{...b.adaptive,...(x.adaptive??{}),history:Array.isArray(x.adaptive?.history)?x.adaptive.history.slice(-100):[]}};log.info(`🧠✅ MEMORY REMEMBERED | prior learning loaded | records:${this.state.records.length} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | adaptations:${this.state.adaptive.adaptations} | ${persistenceMode()}`);}else{this.state=this.blank();log.warn(`🧠⚠️ NO PREVIOUS MEMORY FOUND | starting fresh | ${persistenceMode()}`);this.save();}}catch(e){log.warn(`[🧠 DOG BRAIN] state load failed: ${e instanceof Error?e.message:String(e)}`);}this.resetDay();}
-  private save(){try{writeJsonAtomic(config.dogBrainFile,this.state);}catch(e){log.warn(`[🧠 DOG BRAIN] state save failed: ${e instanceof Error?e.message:String(e)}`);}}
+  private blank():BrainState{return {version:1,day:day(),weights:{NORMAL:zeroWeights(),FLAME:zeroWeights()},dailyMovement:{NORMAL:zeroWeights(),FLAME:zeroWeights()},samples:{NORMAL:0,FLAME:0},records:[],lastReportAt:0,lastLearnAt:0,rollbacks:0};}
+  private hydrate(x:any){this.state={...this.blank(),...x,weights:{NORMAL:{...zeroWeights(),...(x.weights?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.weights?.FLAME??{})}},dailyMovement:{NORMAL:{...zeroWeights(),...(x.dailyMovement?.NORMAL??{})},FLAME:{...zeroWeights(),...(x.dailyMovement?.FLAME??{})}}};}
+  private ensureLoaded(){
+    if(this.loaded)return;
+    this.loaded=true;
+    const primary=config.dogBrainFile,backup=`${primary}.bak`;
+    for(const [file,label] of [[primary,"primary"],[backup,"backup"]] as const){
+      if(!existsSync(file))continue;
+      try{
+        const x=JSON.parse(readFileSync(file,"utf8"));
+        this.hydrate(x);
+        this.memoryLoaded=true;
+        this.memorySource=label;
+        if(label==="backup")log.warn(`🧠💾 DOG BRAIN MEMORY RECOVERED FROM BACKUP | ${backup}`);
+        break;
+      }catch(e){log.warn(`[🧠 DOG BRAIN] ${label} state load failed: ${e instanceof Error?e.message:String(e)}`);}
+    }
+    this.resetDay();
+    if(this.memoryLoaded&&this.memorySource==="backup")this.save();
+  }
+  private save(){
+    const file=config.dogBrainFile,tmp=`${file}.tmp`,backup=`${file}.bak`;
+    try{
+      const dir=dirname(file); if(dir&&dir!==".")mkdirSync(dir,{recursive:true});
+      writeFileSync(tmp,JSON.stringify(this.state,null,2));
+      if(existsSync(file))copyFileSync(file,backup);
+      renameSync(tmp,file);
+    }catch(e){log.warn(`[🧠 DOG BRAIN] state save failed: ${e instanceof Error?e.message:String(e)}`);}
+  }
   private resetDay(){const d=day();if(this.state.day!==d){this.state.day=d;this.state.dailyMovement={NORMAL:zeroWeights(),FLAME:zeroWeights()};this.save();}}
   private lane(c:Candidate):LaneProfile{const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;return c.entryLane==="FLAME"||(age<=config.flameMaxAgeMin&&(c.runnerScore??0)>=75)?"FLAME":"NORMAL";}
   private vector(c:Candidate):FeatureVector{const s=c.snapshots.at(-1);const prev=c.snapshots.length>1?c.snapshots.at(-2):undefined;const buys=Number(s?.buys1m??s?.buys5m??0),sells=Number(s?.sells1m??s?.sells5m??0),ratio=buys/Math.max(1,sells);const vol=Number(s?.volume1mUsd??((s?.volume5mUsd??0)/5));const prevVol=Number(prev?.volume1mUsd??((prev?.volume5mUsd??0)/5));const volAccel=prevVol>0?(vol/prevVol-1):0;const p=Number(s?.priceChange1mPct??s?.priceChange5mPct??0);const liq=Number(s?.liquidityUsd??0);const age=(Date.now()-(c.token.listedAt??c.firstSeenAt))/60000;const risk=s?.onChainRisk;const bundle=risk?.bundleRisk==="low"?1:risk?.bundleRisk==="medium"?-0.35:risk?.bundleRisk==="high"?-1:0;return {
-    buyPressure:clamp((ratio-1)/3),volumeMomentum:clamp(volAccel/2),priceMomentum:clamp(p/25),liquidity:clamp((Math.log10(Math.max(100,liq))-3.5)/2),earlyAge:clamp(1-age/30),multiSource:clamp((c.sources.size-1)/4),socialHeat:clamp(Number(s?.social?.score??0)/100),routeQuality:clamp(((s?.routeQuality??50)-50)/50),bundleSafety:bundle,
-    microCycle:clamp(((c.microCycle?.score??50)-50)/50),runnerProbability:clamp(((c.microCycle?.runnerProbability??50)-50)/50),scoreVelocity:clamp((c.microCycle?.scoreVelocity??0)/20),lateEntrySafety:clamp((50-(c.microCycle?.lateEntryRisk??50))/50),structureBreak:c.microCycle?.structureBreak?1:0
+    buyPressure:clamp((ratio-1)/3),volumeMomentum:clamp(volAccel/2),priceMomentum:clamp(p/25),liquidity:clamp((Math.log10(Math.max(100,liq))-3.5)/2),earlyAge:clamp(1-age/30),multiSource:clamp((c.sources.size-1)/4),socialHeat:clamp(Number(s?.social?.score??0)/100),routeQuality:clamp(((s?.routeQuality??50)-50)/50),bundleSafety:bundle
   };}
-  observe(c:Candidate){if(!config.dogBrainEnabled)return;this.ensureLoaded();const s=c.snapshots.at(-1);if(!s?.priceUsd||s.priceUsd<=0)return;let r=this.state.records.find(x=>x.mint===c.token.address&&!x.resolved);if(!r){r={mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane:this.lane(c),mode:config.liveTrading?"LIVE":"PAPER",decision:"WATCHING",firstSeenAt:c.firstSeenAt,decisionAt:Date.now(),baselinePriceUsd:s.priceUsd,score:c.score,confidence:c.dataConfidence,features:this.vector(c),outcomes:[],maxReturnPct:0,minReturnPct:0,resolved:false,sourceFirstSeenAt:Object.fromEntries(Object.entries(c.sourceFirstSeenAt??{}).map(([k,v])=>[k,Number(v)])),firstBuyScoreAt:c.firstBuyScoreAt};this.state.records.push(r);if(this.state.records.length>config.dogBrainMaxRecords)this.state.records=this.state.records.slice(-config.dogBrainMaxRecords);}else if(r.decision==="WATCHING"||r.decision==="STALKING"){r.name=c.token.name;r.symbol=c.token.symbol;r.lane=this.lane(c);r.score=c.score;r.confidence=c.dataConfidence;r.features=this.vector(c);}this.save();}
-  markDecision(c:Candidate,decision:"STALKING"|"REJECTED"|"BOUGHT"){if(!config.dogBrainEnabled)return;this.observe(c);const r=this.state.records.find(x=>x.mint===c.token.address&&!x.resolved);if(!r)return;const priorDecision=r.decision,priorDecisionAt=r.decisionAt;r.decision=decision;r.mode=config.liveTrading?"LIVE":"PAPER";if(!(decision==="STALKING"&&priorDecision==="STALKING"))r.decisionAt=Date.now();r.decisionReason=c.decisionReason;r.lane=this.lane(c);r.score=c.score;r.confidence=c.dataConfidence;r.features=this.vector(c);r.sourceFirstSeenAt=Object.fromEntries(Object.entries(c.sourceFirstSeenAt??{}).map(([k,v])=>[k,Number(v)]));r.firstBuyScoreAt=c.firstBuyScoreAt;const snap=c.snapshots.at(-1);r.missingFields=[snap?.routeQuality==null?"routeQuality":null,snap?.onChainRisk==null?"onChainRisk":null,snap?.onChainRisk?.top10Pct==null&&snap?.top10HolderPct==null?"top10HolderPct":null,snap?.bundleStatus==="unknown"||snap?.bundleStatus==="skipped"?"bundleSignal":null].filter(Boolean) as string[];r.decisionSnapshot={at:Date.now(),priorDecision,stalkingDurationSec:decision==="BOUGHT"&&priorDecision==="STALKING"?Math.max(0,Math.round((Date.now()-priorDecisionAt)/1000)):undefined,ageSec:Math.max(0,Math.round((Date.now()-c.firstSeenAt)/1000)),firstThresholdDelaySec:c.firstBuyScoreAt?Math.max(0,Math.round((c.firstBuyScoreAt-c.firstSeenAt)/1000)):null,entryDelayAfterThresholdSec:c.firstBuyScoreAt?Math.max(0,Math.round((Date.now()-c.firstBuyScoreAt)/1000)):null,sources:[...c.sources],sourceFirstSeenAt:r.sourceFirstSeenAt,route:{quality:snap?.routeQuality,quotedAt:snap?.routeQuotedAt,roundTripPct:snap?.routeRoundTripPct,router:snap?.routeRouter,mode:snap?.routeMode,feeBps:snap?.routeFeeBps,buy:snap?.buyRoute,sell:snap?.sellRoute},safety:{bundleStatus:snap?.bundleStatus,bundleRisk:snap?.bundleRisk,onChainRisk:snap?.onChainRisk,safetyElapsedMs:snap?.onChainRisk?.elapsedMs},momentum:{price1m:snap?.priceChange1mPct,price5m:snap?.priceChange5mPct,buys1m:snap?.buys1m,sells1m:snap?.sells1m,volume1mUsd:snap?.volume1mUsd,volume5mUsd:snap?.volume5mUsd},thesis:c.thesis};this.save();}
-  recordTradeClose(p:Position,pnlPct:number,reason:string,exitPriceUsd?:number){if(!config.dogBrainEnabled)return;this.ensureLoaded();const r=[...this.state.records].reverse().find(x=>x.mint===p.mint&&x.decision==="BOUGHT"&&!x.resolved);if(!r)return;const chartPeak=((p.highPriceUsd-p.entryPriceUsd)/p.entryPriceUsd)*100;const peak=(!p.paper&&p.highExecutablePnlPct!=null)?p.highExecutablePnlPct:chartPeak;const giveback=peak>0?Math.max(0,(peak-pnlPct)/peak*100):0;r.tradeExitPct=pnlPct;r.tradeExitReason=reason;r.tradeClosedAt=Date.now();r.tradeExitPriceUsd=exitPriceUsd;r.tradePeakPct=peak;r.tradePeakGivebackPct=giveback;r.postExitOutcomes=r.postExitOutcomes??[];
-    const hist=p.priceHistory??[];const maxHist=hist.length?Math.max(...hist.map(x=>x.pnlPct)):peak;const minHist=hist.length?Math.min(...hist.map(x=>x.pnlPct)):pnlPct;
-    const tp=p.lane==="FLAME"?config.flameTakeProfitPct:config.takeProfitPct;const stop=p.lane==="FLAME"?config.flameStopLossPct:config.hardStopLossPct;
-    const tpHit=hist.find(x=>x.pnlPct>=tp);const stopHit=hist.find(x=>x.pnlPct<=-stop);
-    r.exitCounterfactuals={observedExitPct:pnlPct,observedPeakPct:peak,maxTrackedPct:maxHist,minTrackedPct:minHist,fixedTpPct:tp,fixedTpHit:!!tpHit,hardStopPct:stop,hardStopHit:!!stopHit,firstBoundary:tpHit&&stopHit?(tpHit.at<stopHit.at?"TP_FIRST":"STOP_FIRST"):tpHit?"TP_ONLY":stopHit?"STOP_ONLY":"NEITHER",trackedPoints:hist.length};this.save();}
-  recordExitOutcome(mint:string,minute:number,priceUsd:number,returnFromEntryPct:number,returnFromExitPct:number){if(!config.dogBrainEnabled)return;this.ensureLoaded();const r=[...this.state.records].reverse().find(x=>x.mint===mint&&x.decision==="BOUGHT"&&x.tradeClosedAt!=null);if(!r)return;r.postExitOutcomes=r.postExitOutcomes??[];if(r.postExitOutcomes.some(x=>x.minute===minute))return;r.postExitOutcomes.push({minute,at:Date.now(),priceUsd,returnFromEntryPct,returnFromExitPct});this.save();}
-  boot(){this.ensureLoaded();if(config.dogBrainRequirePersistence&&persistenceMode().startsWith("LOCAL/"))throw new Error("DOG_BRAIN_REQUIRE_PERSISTENCE=true but no persistent volume is configured. Set DOG_BRAIN_DATA_DIR or mount a Railway volume before running so learning memory cannot be lost on redeploy.");}
-  entryThresholds(){this.ensureLoaded();const a=this.state.adaptive;return {buyScore:Math.max(65,Math.min(90,config.buyScore+a.buyScoreOffset)),confidence:Math.max(50,Math.min(92,config.minDataConfidence+a.confidenceOffset)),paperConfidence:Math.max(45,Math.min(90,config.paperMinDataConfidence+a.confidenceOffset)),hardStop:Math.max(8,Math.min(16,config.hardStopLossPct+a.hardStopOffset)),softStop:Math.max(5,Math.min(12,config.softStopLossPct+a.softStopOffset))};}
-  private addAdaptation(change:string,evidence:string){const a=this.state.adaptive;a.adaptations++;a.lastAdaptAt=Date.now();a.history.push({at:a.lastAdaptAt,change,evidence});if(a.history.length>100)a.history=a.history.slice(-100);log.info(`🧠🔧 AUTO-ADAPT | ${change} | ${evidence}`);}
-  private autoTune(){if(!config.dogBrainAutonomous)return;const closed=this.state.records.filter(r=>r.resolved&&r.decision==="BOUGHT"&&r.tradeExitPct!=null);const a=this.state.adaptive;if(closed.length<config.dogBrainAutoTuneMinTrades)return;if(closed.length-a.lastTuneClosedTrades<config.dogBrainAutoTuneEveryTrades)return;const recent=closed.slice(-30),wins=recent.filter(r=>(r.tradeExitPct??0)>0),wr=wins.length/recent.length;const rejected=this.state.records.filter(r=>r.resolved&&r.decision==="REJECTED").slice(-60),missed=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct).length;const missedRate=rejected.length?missed/rejected.length:0;const earlyExit=recent.filter(r=>(r.postExitOutcomes??[]).some(o=>o.returnFromExitPct>=20)).length;const postExitDump=recent.filter(r=>(r.tradeExitPct??0)>0&&(r.postExitOutcomes??[]).some(o=>o.returnFromExitPct<=-15)).length;
-    if(wr<0.40&&a.buyScoreOffset<config.dogBrainMaxBuyScoreOffset){a.buyScoreOffset+=1;this.addAdaptation(`BUY_SCORE effective offset → ${a.buyScoreOffset>=0?"+":""}${a.buyScoreOffset}`,`recent WR ${(wr*100).toFixed(0)}% across ${recent.length} closed trades`);}else if(wr>0.62&&missedRate>0.12&&a.buyScoreOffset>config.dogBrainMinBuyScoreOffset){a.buyScoreOffset-=1;this.addAdaptation(`BUY_SCORE effective offset → ${a.buyScoreOffset>=0?"+":""}${a.buyScoreOffset}`,`recent WR ${(wr*100).toFixed(0)}% plus missed-runner rate ${(missedRate*100).toFixed(0)}%`);}
-    if(earlyExit>=Math.max(3,Math.ceil(recent.length*.20))&&a.runnerPatience<1){a.runnerPatience=Math.min(1,a.runnerPatience+0.1);this.addAdaptation(`RUNNER PATIENCE → ${a.runnerPatience.toFixed(1)}`,`${earlyExit}/${recent.length} recent exits later gained at least +20% after exit`);}else if(postExitDump>=Math.max(3,Math.ceil(wins.length*.35))&&a.runnerPatience>-1){a.runnerPatience=Math.max(-1,a.runnerPatience-0.1);this.addAdaptation(`RUNNER PATIENCE → ${a.runnerPatience.toFixed(1)}`,`${postExitDump}/${Math.max(1,wins.length)} profitable exits were followed by >=15% deterioration`);}
-    const stopped=recent.filter(r=>(r.tradeExitReason??"").includes("STOP"));const recovered=stopped.filter(r=>(r.postExitOutcomes??[]).some(o=>o.returnFromEntryPct>=10)).length;if(stopped.length>=5&&recovered/stopped.length>=.50&&a.softStopOffset<3){a.softStopOffset+=1;this.addAdaptation(`SOFT STOP effective offset → +${a.softStopOffset}%`,` ${recovered}/${stopped.length} recent stopped trades later recovered to +10% vs entry`);}else if(stopped.length>=5&&recovered/stopped.length<=.15&&a.softStopOffset>-2){a.softStopOffset-=1;this.addAdaptation(`SOFT STOP effective offset → ${a.softStopOffset}%`,`${recovered}/${stopped.length} recent stopped trades recovered; cutting weak trades earlier`);}
-    a.lastTuneClosedTrades=closed.length;this.save();}
-  runnerExitPlan(p:Position,current:{pnlPct:number;peakPnlPct:number;buySellRatio:number;priceMomentumPct:number}){this.ensureLoaded();const a=this.state.adaptive;const e=p.entryAnalysis;let confidence=0;confidence+=Math.max(0,Math.min(35,((e?.microCycle?.runnerProbability??50)-50)*.7));confidence+=Math.max(0,Math.min(20,((e?.score??p.scoreAtBuy??75)-75)*.8));confidence+=p.lane==="FLAME"?12:p.lane==="ELITE"?7:0;confidence+=Math.max(-10,Math.min(18,(current.buySellRatio-1)*9));confidence+=Math.max(-12,Math.min(15,current.priceMomentumPct*.6));confidence+=Math.max(0,Math.min(12,current.peakPnlPct*.25));confidence+=a.runnerPatience*8;confidence=Math.max(0,Math.min(100,confidence));const mode:"STANDARD"|"STRONG_RUNNER"|"MONSTER_RUNNER"=confidence>=config.dogBrainRunnerMonsterThreshold?"MONSTER_RUNNER":confidence>=config.dogBrainRunnerStrongThreshold?"STRONG_RUNNER":"STANDARD";const baseTp=p.lane==="FLAME"?config.flameTakeProfitPct:config.takeProfitPct;const baseTrail=p.lane==="FLAME"?config.flameTrailingStopPct:config.trailingStopPct;const baseProtect=p.lane==="FLAME"?config.flameProfitProtectArmPct:config.profitProtectArmPct;let tp=baseTp,trail=baseTrail,protect=baseProtect,giveback=config.peakGivebackExitPct,maxAge=config.maxPositionAgeMin;if(mode==="STRONG_RUNNER"){tp+=Math.min(config.dogBrainRunnerMaxTpBonus,15+Math.max(0,a.runnerPatience)*15);trail+=Math.min(config.dogBrainRunnerMaxTrailBonus,3+Math.max(0,a.runnerPatience)*2);protect+=5;giveback=Math.min(88,giveback+8);maxAge+=Math.min(config.dogBrainRunnerMaxTimeBonusMin,6+Math.max(0,a.runnerPatience)*6);}else if(mode==="MONSTER_RUNNER"){tp+=Math.min(config.dogBrainRunnerMaxTpBonus,35+Math.max(0,a.runnerPatience)*20);trail+=Math.min(config.dogBrainRunnerMaxTrailBonus,6+Math.max(0,a.runnerPatience)*2);protect+=10;giveback=Math.min(92,giveback+15);maxAge+=config.dogBrainRunnerMaxTimeBonusMin;}return {mode,confidence,tp,trail,protect,giveback,maxAge};}
-  adaptiveSnapshot(){this.ensureLoaded();return {...this.state.adaptive,...this.entryThresholds()};}
+  observe(c:Candidate){if(!config.dogBrainEnabled)return;this.ensureLoaded();const s=c.snapshots.at(-1);if(!s?.priceUsd||s.priceUsd<=0)return;let r=this.state.records.find(x=>x.mint===c.token.address&&!x.resolved);if(!r){r={mint:c.token.address,name:c.token.name,symbol:c.token.symbol,lane:this.lane(c),mode:config.liveTrading?"LIVE":"PAPER",decision:"WATCHING",firstSeenAt:c.firstSeenAt,decisionAt:Date.now(),baselinePriceUsd:s.priceUsd,score:c.score,confidence:c.dataConfidence,features:this.vector(c),outcomes:[],maxReturnPct:0,minReturnPct:0,resolved:false};this.state.records.push(r);if(this.state.records.length>config.dogBrainMaxRecords)this.state.records=this.state.records.slice(-config.dogBrainMaxRecords);}else if(r.decision==="WATCHING"){r.name=c.token.name;r.symbol=c.token.symbol;r.lane=this.lane(c);r.score=c.score;r.confidence=c.dataConfidence;r.features=this.vector(c);}this.save();}
+  markDecision(c:Candidate,decision:"REJECTED"|"BOUGHT"){if(!config.dogBrainEnabled)return;this.observe(c);const r=this.state.records.find(x=>x.mint===c.token.address&&!x.resolved);if(!r)return;r.decision=decision;r.mode=config.liveTrading?"LIVE":"PAPER";r.decisionAt=Date.now();r.decisionReason=c.decisionReason;r.lane=this.lane(c);r.score=c.score;r.confidence=c.dataConfidence;r.features=this.vector(c);this.save();}
+  recordTradeClose(p:Position,pnlPct:number,reason:string){if(!config.dogBrainEnabled)return;this.ensureLoaded();const r=[...this.state.records].reverse().find(x=>x.mint===p.mint&&x.decision==="BOUGHT"&&!x.resolved);if(!r)return;r.tradeExitPct=pnlPct;r.tradeExitReason=reason;r.tradeClosedAt=Date.now();this.save();}
   scoreAdjustment(c:Candidate){if(!config.dogBrainEnabled)return 0;this.ensureLoaded();this.resetDay();const lane=this.lane(c);if(this.state.samples[lane]<config.dogBrainMinSamples)return 0;const v=this.vector(c),w=this.state.weights[lane];let d=0;for(const f of FEATURES)d+=v[f]*w[f];return Math.max(-config.dogBrainMaxScoreAdjustment,Math.min(config.dogBrainMaxScoreAdjustment,d));}
   private learn(r:LearningRecord){const lane=r.lane;const runner=r.maxReturnPct>=config.dogBrainRunnerPct;const rug=r.minReturnPct<=-config.dogBrainRugPct;const success=runner?1:rug?-1:r.maxReturnPct>=10?0.35:r.maxReturnPct<=-10?-0.35:0;this.state.samples[lane]++;
     if(this.state.samples[lane]<config.dogBrainMinSamples||success===0)return;
@@ -64,141 +74,23 @@ class DogBrain {
     this.state.lastLearnAt=Date.now();
   }
   private maybeRollback(){const recent=this.state.records.filter(r=>r.resolved&&r.decision==="BOUGHT"&&r.tradeExitPct!=null).slice(-config.dogBrainRollbackWindow);if(recent.length<config.dogBrainRollbackWindow)return;const avg=recent.reduce((a,r)=>a+(r.tradeExitPct??0),0)/recent.length;if(this.state.baselinePaperMetric==null){this.state.baselinePaperMetric=avg;return;}if(avg<this.state.baselinePaperMetric-config.dogBrainRollbackDropPct){this.state.weights={NORMAL:zeroWeights(),FLAME:zeroWeights()};this.state.dailyMovement={NORMAL:zeroWeights(),FLAME:zeroWeights()};this.state.rollbacks++;this.state.baselinePaperMetric=avg;log.warn(`🧠↩️ DOG BRAIN ROLLBACK | recent trade avg ${avg.toFixed(1)}% deteriorated beyond guardrail — learned score weights reset; safety rules unchanged`);}else this.state.baselinePaperMetric=this.state.baselinePaperMetric*.8+avg*.2;}
-  async tick(){if(!config.dogBrainEnabled||this.busy)return;this.ensureLoaded();this.resetDay();this.busy=true;try{const now=Date.now(),mins=[1,5,15,30,60];const due=this.state.records.filter(r=>!r.resolved&&r.decision!=="WATCHING"&&mins.some(m=>now-r.decisionAt>=m*60000&&!r.outcomes.some(o=>o.minute===m)));if(due.length){const market=await this.dex.batch([...new Set(due.map(r=>r.mint))]);for(const r of due){const px=market.get(r.mint)?.priceUsd;if(!px||px<=0)continue;for(const m of mins){if(now-r.decisionAt>=m*60000&&!r.outcomes.some(o=>o.minute===m)){const ret=(px/r.baselinePriceUsd-1)*100;r.outcomes.push({minute:m,at:now,priceUsd:px,returnPct:ret});r.maxReturnPct=Math.max(r.maxReturnPct,ret);r.minReturnPct=Math.min(r.minReturnPct,ret);if(m===60){r.resolved=true;this.learn(r);const label=(r.decision==="REJECTED"||r.decision==="STALKING")&&r.maxReturnPct>=config.dogBrainRunnerPct?"🤦 MISSED RUNNER":r.minReturnPct<=-config.dogBrainRugPct?"🛡️ RUG/DUMP":"📚 LEARNED";log.info(`🧠🐶 ${label} | ${r.name} ($${r.symbol}) | ${r.decision} | 1h:${ret>=0?"+":""}${ret.toFixed(1)}% | max:${r.maxReturnPct>=0?"+":""}${r.maxReturnPct.toFixed(1)}% | min:${r.minReturnPct.toFixed(1)}% | lane:${r.lane}`);}}}}this.maybeRollback();this.autoTune();this.save();}
+  async tick(){if(!config.dogBrainEnabled||this.busy)return;this.ensureLoaded();this.resetDay();this.busy=true;try{const now=Date.now(),mins=[1,5,15,30,60];const due=this.state.records.filter(r=>!r.resolved&&r.decision!=="WATCHING"&&mins.some(m=>now-r.decisionAt>=m*60000&&!r.outcomes.some(o=>o.minute===m)));if(due.length){const market=await this.dex.batch([...new Set(due.map(r=>r.mint))]);for(const r of due){const px=market.get(r.mint)?.priceUsd;if(!px||px<=0)continue;for(const m of mins){if(now-r.decisionAt>=m*60000&&!r.outcomes.some(o=>o.minute===m)){const ret=(px/r.baselinePriceUsd-1)*100;r.outcomes.push({minute:m,at:now,priceUsd:px,returnPct:ret});r.maxReturnPct=Math.max(r.maxReturnPct,ret);r.minReturnPct=Math.min(r.minReturnPct,ret);if(m===60){r.resolved=true;this.learn(r);const label=r.decision==="REJECTED"&&r.maxReturnPct>=config.dogBrainRunnerPct?"🤦 MISSED RUNNER":r.minReturnPct<=-config.dogBrainRugPct?"🛡️ RUG/DUMP":"📚 LEARNED";log.info(`🧠🐶 ${label} | ${r.name} ($${r.symbol}) | ${r.decision} | 1h:${ret>=0?"+":""}${ret.toFixed(1)}% | max:${r.maxReturnPct>=0?"+":""}${r.maxReturnPct.toFixed(1)}% | min:${r.minReturnPct.toFixed(1)}% | lane:${r.lane}`);}}}}this.maybeRollback();this.save();}
       if(now-this.state.lastReportAt>=config.dogBrainReportIntervalMs){this.state.lastReportAt=now;this.logReport();this.save();}
     }catch(e){log.warn(`[🧠 DOG BRAIN] follow-up error: ${e instanceof Error?e.message:String(e)}`);}finally{this.busy=false;}}
   logReport(){if(!config.dogBrainEnabled)return;this.ensureLoaded();const done=this.state.records.filter(r=>r.resolved);const bought=done.filter(r=>r.decision==="BOUGHT"&&r.tradeExitPct!=null);const rejected=done.filter(r=>r.decision==="REJECTED");const wins=bought.filter(r=>(r.tradeExitPct??0)>0).length;const missed=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct).length;const avoided=rejected.filter(r=>r.minReturnPct<=-config.dogBrainRugPct).length;const all=[...FEATURES].map(f=>({f,w:Math.abs(this.state.weights.NORMAL[f])+Math.abs(this.state.weights.FLAME[f])})).sort((a,b)=>b.w-a.w);const top=all[0];log.info(`🧠🐶 DOG BRAIN DAILY | resolved:${done.length} | trades:${bought.length} | W:${wins} L:${Math.max(0,bought.length-wins)} WR:${bought.length?(wins/bought.length*100).toFixed(1):"0.0"}% | missed runners:${missed} | rejected dumps/rugs:${avoided} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | strongest learned:${top?.f??"none"} | rollbacks:${this.state.rollbacks}`);}
 
   reportSnapshot(mode:"PAPER"|"LIVE",sinceMs=3600000){
-    const empty={enabled:false,observations:0,resolved:0,bought:0,rejected:0,missedRunners:0,avoidedDumps:0,wins:0,losses:0,strongest:"none",weakest:"none",strongestPositive:"none yet",strongestWarning:"none yet",recentLessons:[] as string[],learnedSummary:["Dog Brain is disabled."],improvements:["Enable DOG_BRAIN_ENABLED=true to collect learning data."]};
-    if(!config.dogBrainEnabled)return empty;
+    if(!config.dogBrainEnabled)return {enabled:false,observations:0,resolved:0,bought:0,rejected:0,missedRunners:0,avoidedDumps:0,wins:0,losses:0,strongest:"none",weakest:"none",recentLessons:[] as string[]};
     this.ensureLoaded(); const now=Date.now();
     const matching=this.state.records.filter(r=>(r.mode??(config.liveTrading?"LIVE":"PAPER"))===mode);
     const recent=matching.filter(r=>now-r.decisionAt<=sinceMs); const resolved=recent.filter(r=>r.resolved);
     const bought=recent.filter(r=>r.decision==="BOUGHT"); const rejected=recent.filter(r=>r.decision==="REJECTED");
     const closed=bought.filter(r=>r.tradeExitPct!=null); const wins=closed.filter(r=>(r.tradeExitPct??0)>0).length;
     const missed=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct).length; const avoided=rejected.filter(r=>r.minReturnPct<=-config.dogBrainRugPct).length;
-    const weights=FEATURES.map(f=>({f,w:(this.state.weights.NORMAL[f]+this.state.weights.FLAME[f])/2,abs:(Math.abs(this.state.weights.NORMAL[f])+Math.abs(this.state.weights.FLAME[f]))/2}));
-    const strongest=[...weights].sort((a,b)=>b.abs-a.abs)[0];
-    const positive=[...weights].filter(x=>x.w>0).sort((a,b)=>b.w-a.w)[0];
-    const warning=[...weights].filter(x=>x.w<0).sort((a,b)=>a.w-b.w)[0];
-    const labels:Record<FeatureName,string>={buyPressure:"buy pressure",volumeMomentum:"volume acceleration",priceMomentum:"price momentum",liquidity:"liquidity",earlyAge:"very early age",multiSource:"multi-source confirmation",socialHeat:"social/meta heat",routeQuality:"sell-route quality",bundleSafety:"bundle safety",microCycle:"micro-cycle strength",runnerProbability:"runner probability",scoreVelocity:"score velocity",lateEntrySafety:"early-entry timing",structureBreak:"bullish structure breaks"};
+    const weights=FEATURES.map(f=>({f,w:(this.state.weights.NORMAL[f]+this.state.weights.FLAME[f])/2})).sort((a,b)=>b.w-a.w);
     const lessons=recent.filter(r=>r.resolved).slice(-5).reverse().map(r=>`${r.name} ($${r.symbol}) ${r.decision}: max ${r.maxReturnPct>=0?"+":""}${r.maxReturnPct.toFixed(1)}%, min ${r.minReturnPct.toFixed(1)}%${r.tradeExitPct!=null?`, exit ${r.tradeExitPct>=0?"+":""}${r.tradeExitPct.toFixed(1)}%`:""}`);
-
-    const good=resolved.filter(r=>(r.tradeExitPct??r.maxReturnPct)>=10||r.maxReturnPct>=config.dogBrainRunnerPct);
-    const bad=resolved.filter(r=>(r.tradeExitPct??0)<0||r.minReturnPct<=-config.dogBrainRugPct);
-    const avg=(rows:LearningRecord[],f:FeatureName)=>rows.length?rows.reduce((a,r)=>a+Number(r.features?.[f]??0),0)/rows.length:0;
-    const diffs=FEATURES.map(f=>({f,d:avg(good,f)-avg(bad,f)})).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d));
-    const learnedSummary:string[]=[];
-    if(resolved.length<3){
-      learnedSummary.push(`Only ${resolved.length} resolved ${mode.toLowerCase()} samples in this report window — too early for a confident strategy change.`);
-      learnedSummary.push(`Current learned weights still favor ${positive?labels[positive.f]:"no signal yet"}${warning?` and distrust ${labels[warning.f]}`:""}.`);
-    }else{
-      const bestDiff=diffs.find(x=>x.d>0.08); const badDiff=diffs.find(x=>x.d<-0.08);
-      if(bestDiff)learnedSummary.push(`Better outcomes showed more ${labels[bestDiff.f]} than weaker outcomes.`);
-      if(badDiff)learnedSummary.push(`Poor outcomes showed more ${labels[badDiff.f]}; Dog Brain is treating it as a caution signal.`);
-      if(missed)learnedSummary.push(`${missed} rejected coin${missed===1?"":"s"} later met the runner threshold — rejection logic may be too strict for some early runners.`);
-      if(avoided)learnedSummary.push(`${avoided} rejected coin${avoided===1?"":"s"} later dumped/rugged — those rejections were useful safety wins.`);
-      if(closed.length)learnedSummary.push(`Bought-trade result in this window: ${wins}/${closed.length} profitable (${(wins/closed.length*100).toFixed(0)}% win rate).`);
-    }
-
-    const improvements:string[]=[];
-    if(resolved.length<config.dogBrainMinSamples)improvements.push(`Keep paper mode running until at least ${config.dogBrainMinSamples} resolved samples are collected before trusting weight changes.`);
-    if(missed>0)improvements.push(`Review missed runners before tightening anything. Prefer the controlled EARLY opportunity lane so Dog can take smaller shots before full NORMAL confirmation while hard safety/route gates stay intact.`);
-    if(avoided>missed&&avoided>0)improvements.push(`Do not loosen bundle/route safety broadly — current rejection logic is successfully avoiding more bad moves than runners.`);
-    if(closed.length>=3&&wins/closed.length<0.5)improvements.push(`Recent bought-trade win rate is below 50%; require stronger confirmation on the top positive predictor before entry and keep stops tight.`);
-    if(closed.length>=3&&wins/closed.length>=0.65)improvements.push(`Recent entries are working; avoid over-tightening. Focus improvements on exits and missed-runner capture instead of making all entries stricter.`);
-    if(positive)improvements.push(`Give slightly more attention to ${labels[positive.f]} — it currently has the strongest positive learned weight, within the existing Dog Brain guardrails.`);
-    if(warning)improvements.push(`Penalize setups where ${labels[warning.f]} is weak/negative; it currently carries the strongest negative learned weight.`);
-    if(!improvements.length)improvements.push("Keep collecting outcomes; there is not enough separation between winners, losers, and rejected runners to justify a strategy change yet.");
-
-    // Creator-facing recommendations: exact settings to TEST, never auto-applied.
-    const preciseRecommendations:string[]=[];
-    const moreDataNeeded:string[]=[];
-    const wr=closed.length?wins/closed.length:0;
-    const confidence=(n:number)=>n>=30?"HIGH":n>=12?"MEDIUM":"LOW";
-    const conf=confidence(resolved.length);
-    const profitable=closed.filter(r=>(r.tradeExitPct??0)>0);
-    const losing=closed.filter(r=>(r.tradeExitPct??0)<0);
-    const avgGiveback=profitable.length?profitable.reduce((a,r)=>a+Math.max(0,r.maxReturnPct-(r.tradeExitPct??0)),0)/profitable.length:0;
-    const lossRecovery=losing.length?losing.filter(r=>r.maxReturnPct>=10).length/losing.length:0;
-    const flameResolved=resolved.filter(r=>r.lane==="FLAME");
-    const normalResolved=resolved.filter(r=>r.lane==="NORMAL");
-
-    if(closed.length>=3&&wr<0.45){
-      const proposed=Math.min(95,config.buyScore+3);
-      preciseRecommendations.push(`ENTRY FILTER | Current BUY_SCORE=${config.buyScore} → TEST ${proposed} for NORMAL entries only. Evidence: ${wins}/${closed.length} closed ${mode.toLowerCase()} trades won (${(wr*100).toFixed(0)}%). Expected upside: fewer marginal entries. Risk: more missed runners. Confidence: ${confidence(closed.length)} (${closed.length} closed trades).`);
-    }else if(closed.length>=5&&wr>=0.65){
-      preciseRecommendations.push(`ENTRY FILTER | KEEP BUY_SCORE=${config.buyScore}. Evidence: ${wins}/${closed.length} closed trades won (${(wr*100).toFixed(0)}%). Do not make normal entries stricter until this falls below ~55% over a larger sample. Confidence: ${confidence(closed.length)}.`);
-    }
-
-    if(missed>=2){
-      preciseRecommendations.push(`MISSED RUNNERS / EARLY LANE | ${missed} rejected coins later reached the +${config.dogBrainRunnerPct}% runner threshold. Keep NORMAL BUY_SCORE=${config.buyScore} intact, but evaluate EARLY defaults SCORE>=${config.opportunityMinScore}, RUNNER>=${config.opportunityMinRunnerScore}, LIQUIDITY>=$${config.opportunityMinLiquidityUsd}, and ${config.opportunityRequireSignals} opportunity signals. Expected upside: collect real entry/exit data and participate earlier. Risk: more small false-positive entries; PAPER_EARLY_MAX_USD=$${config.paperEarlyMaxUsd} limits exposure. Confidence: ${confidence(rejected.length)} (${rejected.length} rejected samples).`);
-      const missedRows=rejected.filter(r=>r.maxReturnPct>=config.dogBrainRunnerPct);
-      const bucket=(r:LearningRecord)=>{const x=(r.decisionReason??"").toLowerCase();if(x.includes("route"))return "route";if(x.includes("safety completeness"))return "safety completeness";if(x.includes("safety"))return "safety";if(x.includes("quality"))return "quality";if(x.includes("liquidity"))return "liquidity";if(x.includes("momentum")||x.includes("decel")||x.includes("anti-fomo"))return "momentum/anti-FOMO";if(x.includes("score"))return "score";if(x.includes("ai pass"))return "AI veto";if(x.includes("stalk invalidated"))return "stalk invalidation";return "other/observation";};
-      const blockers=Object.entries(missedRows.reduce((a,r)=>{const k=bucket(r);a[k]=(a[k]??0)+1;return a;},{} as Record<string,number>)).sort((a,b)=>b[1]-a[1]).slice(0,3);
-      if(blockers.length) preciseRecommendations.push(`MISSED-RUNNER FORENSICS | Top blocking reasons among confirmed missed runners: ${blockers.map(([k,n])=>`${k} ${n}`).join(", ")}. Fix the repeated blocker first instead of globally loosening every safety rule.`);
-    }
-
-    if(avoided>=2&&avoided>=missed){
-      preciseRecommendations.push(`SAFETY | DO NOT lower route/bundle safety yet. Evidence: ${avoided} rejected coins later hit the dump/rug threshold versus ${missed} missed runners. Expected upside: preserve current rug avoidance. Risk of changing it now: converting correct rejections into losses. Confidence: ${confidence(rejected.length)}.`);
-    }
-
-    if(positive?.f==="buyPressure"&&closed.length>=3&&wr<0.55){
-      const proposed=(config.flameMinBuySellRatio+0.5).toFixed(1);
-      preciseRecommendations.push(`BUY PRESSURE | Current FLAME_MIN_BUY_SELL_RATIO=${config.flameMinBuySellRatio} → TEST ${proposed}. Evidence: buy pressure is Dog Brain's strongest positive predictor (${positive.w>=0?"+":""}${positive.w.toFixed(2)}) while bought-trade win rate is ${(wr*100).toFixed(0)}%. Expected upside: avoid weak momentum entries. Risk: later entries / fewer trades. Confidence: ${conf}.`);
-    }
-
-    if(avgGiveback>=12&&profitable.length>=3){
-      const proposed=Math.max(4,config.trailingStopPct-2);
-      preciseRecommendations.push(`PROFIT PROTECTION | Current TRAILING_STOP_PCT=${config.trailingStopPct}% → TEST ${proposed}% after the existing PROFIT_PROTECT_ARM_PCT=${config.profitProtectArmPct}%. Evidence: profitable trades gave back an average ${avgGiveback.toFixed(1)} percentage points from observed peak to exit. Expected upside: retain more runner profit. Risk: tighter trails can exit normal volatility early. Confidence: ${confidence(profitable.length)} (${profitable.length} winners).`);
-    }
-
-    if(lossRecovery>=0.5&&losing.length>=4){
-      const proposed=Math.min(12,config.softStopLossPct+1);
-      preciseRecommendations.push(`SOFT STOP REVIEW | Current SOFT_STOP_LOSS_PCT=${config.softStopLossPct}% → TEST ${proposed}% ONLY in paper mode with momentum confirmation. Evidence: ${(lossRecovery*100).toFixed(0)}% of ${losing.length} losing exits later recovered to at least +10% in tracked outcomes. Expected upside: fewer premature panic exits. Risk: larger losses when recovery never arrives; HARD_STOP_LOSS_PCT=${config.hardStopLossPct}% stays unchanged. Confidence: ${confidence(losing.length)}.`);
-    }
-
-    if(preciseRecommendations.length===0){
-      preciseRecommendations.push(`NO PARAMETER CHANGE YET | Keep BUY_SCORE=${config.buyScore}, FLAME_MIN_SCORE=${config.flameMinScore}, HARD_STOP_LOSS_PCT=${config.hardStopLossPct}%, and TRAILING_STOP_PCT=${config.trailingStopPct}% unchanged. Evidence is not strong enough in this window. Confidence: ${conf} (${resolved.length} resolved samples).`);
-    }
-
-    if(resolved.length<config.dogBrainMinSamples)moreDataNeeded.push(`GENERAL SIGNAL QUALITY | Need ${Math.max(0,config.dogBrainMinSamples-resolved.length)} more resolved ${mode.toLowerCase()} observations to reach the minimum ${config.dogBrainMinSamples}-sample learning threshold.`);
-    if(flameResolved.length<10)moreDataNeeded.push(`FLAME QUALITY | Need ${10-flameResolved.length} more resolved FLAME setups. Question: does lowering FLAME_MIN_SCORE capture runners without materially increasing rugs/losses?`);
-    if(normalResolved.length<20)moreDataNeeded.push(`NORMAL ENTRY QUALITY | Need ${20-normalResolved.length} more resolved NORMAL setups to compare winners vs losers without FLAME noise.`);
-    if(profitable.length<10)moreDataNeeded.push(`EXIT / PROFIT GIVEBACK | Need ${10-profitable.length} more profitable closed trades with peak-vs-exit tracking. Question: should TRAILING_STOP_PCT or TAKE_PROFIT_PCT change?`);
-    if(losing.length<10)moreDataNeeded.push(`STOP-LOSS RECOVERY | Need ${10-losing.length} more losing/stop exits with 15m/30m/1h counterfactual outcomes. Question: are stops saving capital or cutting recoveries too early?`);
-    if(missed<5)moreDataNeeded.push(`MISSED RUNNERS | Need ${5-missed} more confirmed missed-runner examples before making a larger FLAME threshold change. Track exactly which rejection rule blocked each runner.`);
-    moreDataNeeded.push(`POSITION SIZING | Keep sizing unchanged until there are at least 30 closed trades per lane. Then compare expectancy, drawdown, and loss streaks before changing PAPER_NORMAL_MAX_USD=$${config.paperNormalMaxUsd}, PAPER_ELITE_MAX_USD=$${config.paperEliteMaxUsd}, or PAPER_FLAME_MAX_USD=$${config.paperFlameMaxUsd}.`);
-
-    // System-level self critique: what Dog Brain wants the creator to improve about the bot itself.
-    const selfImprovementRequests:string[]=[];
-    const avgRoute=Math.round((resolved.length?resolved.reduce((a,r)=>a+r.features.routeQuality,0)/resolved.length:0)*100);
-    const avgMulti=Math.round((resolved.length?resolved.reduce((a,r)=>a+r.features.multiSource,0)/resolved.length:0)*100);
-    const avgBundle=Math.round((resolved.length?resolved.reduce((a,r)=>a+r.features.bundleSafety,0)/resolved.length:0)*100);
-    const weakRoute=resolved.filter(r=>r.features.routeQuality<=0).length;
-    const singleSourceish=resolved.filter(r=>r.features.multiSource<=0).length;
-    const unknownBundle=resolved.filter(r=>Math.abs(r.features.bundleSafety)<0.05).length;
-
-    if(weakRoute>=Math.max(3,Math.ceil(resolved.length*0.25))){
-      selfImprovementRequests.push(`🔴 HIGH — SELL-ROUTE / EXECUTION INTELLIGENCE | Evidence: ${weakRoute}/${resolved.length} resolved samples had neutral-or-weak route-quality data (avg normalized route signal ${avgRoute}). What I want added: persist Jupiter route depth, price impact, quote age, retry count, and simulated sell output at entry + each outcome checkpoint. Why: I need to separate bad coin selection from trades that only look good on chart but are hard to exit. Expected benefit: fewer false winners and better live-readiness decisions. Confidence: ${conf}.`);
-    }
-    if(unknownBundle>=Math.max(3,Math.ceil(resolved.length*0.20))){
-      selfImprovementRequests.push(`🔴 HIGH — BUNDLE/HOLDER DATA COVERAGE | Evidence: ${unknownBundle}/${resolved.length} resolved samples had no strong bundle-safety signal (avg normalized bundle signal ${avgBundle}). What I want added: record which safety fields were missing, source latency, holder concentration, linked-wallet/bundle confidence, and whether safety completed before decision time. Why: I cannot learn whether bundle risk predicts losses if unknown and truly-safe look identical. Expected benefit: cleaner safety learning and fewer avoidable rugs. Confidence: ${conf}.`);
-    }
-    if(singleSourceish>=Math.max(3,Math.ceil(resolved.length*0.35))){
-      selfImprovementRequests.push(`🟠 MEDIUM-HIGH — DISCOVERY SOURCE ATTRIBUTION | Evidence: ${singleSourceish}/${resolved.length} resolved samples had little/no multi-source confirmation (avg normalized multi-source signal ${avgMulti}). What I want added: permanently store every discovery source that found each mint, first-seen timestamp per source, and source-specific outcome stats (wins, losses, rugs, missed runners, entry lateness). Why: I want to tell you which scanner is actually finding profitable coins earliest. Expected benefit: prioritize productive scanners and de-emphasize noisy ones. Confidence: ${conf}.`);
-    }
-    if(profitable.length>=2){
-      selfImprovementRequests.push(`🟠 MEDIUM-HIGH — EXIT COUNTERFACTUAL ENGINE | Evidence: ${profitable.length} profitable closed trades are available and observed average peak-to-exit giveback is ${avgGiveback.toFixed(1)} points. What I want added: for every closed trade, simulate fixed TP, trailing-stop, partial-profit, moon-bag, and momentum-collapse exits at the same timestamps. Why: I need to prove whether the entry was good but the exit left money behind. Expected benefit: improve expectancy without simply increasing entry strictness. Confidence: ${confidence(profitable.length)}.`);
-    }else{
-      selfImprovementRequests.push(`🟡 MEDIUM — EXIT COUNTERFACTUAL ENGINE | Evidence: only ${profitable.length} profitable closed trade${profitable.length===1?"":"s"} in this window. What I want added now: capture peak P&L, drawdown from peak, momentum at exit, and alternate-exit outcomes for every trade so I have enough evidence later. Expected benefit: identify whether exits, not entries, are the bigger leak. Confidence: LOW until more winners close.`);
-    }
-    selfImprovementRequests.push(`🟠 MEDIUM-HIGH — ENTRY-TIMING HISTORY | What I want added: save candidate age, first discovery time, first score >= threshold time, actual entry time, and 1m/5m momentum snapshots before entry. Why: I want to measure how many losses are late chases versus genuinely bad setups. Expected benefit: precise entry-delay/observation recommendations instead of guessing from final score. Evidence trigger: ${Math.max(0,closed.length-wins)} losing bought trades and ${missed} missed runner${missed===1?"":"s"} in this report window. Confidence: ${confidence(closed.length+missed)}.`);
-    selfImprovementRequests.push(`🟡 MEDIUM — LEARNING DATA DURABILITY / AUDIT | What I want added: a compact persistent per-trade audit row containing decision inputs, missing fields, source timestamps, entry/exit snapshots, and all counterfactual outcomes. Why: every future creator recommendation should be reproducible after redeploys and not depend on transient logs. Expected benefit: stronger long-run learning and easier debugging. Priority increases before live mode.`);
-
-    return {enabled:true,observations:recent.length,resolved:resolved.length,bought:bought.length,rejected:rejected.length,missedRunners:missed,avoidedDumps:avoided,wins,losses:Math.max(0,closed.length-wins),strongest:strongest?labels[strongest.f]:"none",weakest:warning?labels[warning.f]:"none",strongestPositive:positive?`${labels[positive.f]} (${positive.w>=0?"+":""}${positive.w.toFixed(2)})`:"none yet",strongestWarning:warning?`${labels[warning.f]} (${warning.w.toFixed(2)})`:"none yet",recentLessons:lessons,learnedSummary,improvements,preciseRecommendations,moreDataNeeded,selfImprovementRequests,recommendationConfidence:conf,resolvedSampleSize:resolved.length};
+    return {enabled:true,observations:recent.length,resolved:resolved.length,bought:bought.length,rejected:rejected.length,missedRunners:missed,avoidedDumps:avoided,wins,losses:Math.max(0,closed.length-wins),strongest:weights[0]?.f??"none",weakest:weights.at(-1)?.f??"none",recentLessons:lessons};
   }
-  startupText(){this.ensureLoaded();return `Dog Brain v2 ${config.dogBrainEnabled?`ON (always learning: ${config.liveTrading?"LIVE":"PAPER"}; autonomous:${config.dogBrainAutonomous?"ON":"OFF"})`:"OFF"} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | records ${this.state.records.length} | ${persistenceMode()} | file ${config.dogBrainFile}`;}
+  startupText(){this.ensureLoaded();const memory=this.memoryLoaded?`🧠💾 MEMORY REMEMBERED (${this.memorySource})`:`🧠💾 NEW MEMORY FILE`;return `${memory} | Dog Brain v1 ${config.dogBrainEnabled?`ON (always learning: ${config.liveTrading?"LIVE":"PAPER"})`:"OFF"} | samples N:${this.state.samples.NORMAL} F:${this.state.samples.FLAME} | records:${this.state.records.length} | file ${config.dogBrainFile}`;}
 }
 export const dogBrain=new DogBrain();

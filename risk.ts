@@ -31,8 +31,7 @@ export async function fastSafetyCheck(mint:string):Promise<OnChainRiskSnapshot>{
     fastCache.set(mint,{expires:Date.now()+config.safetyCacheMs,value});return value;
   }).catch(e=>{
     const value:OnChainRiskSnapshot={checked:false,bundleRisk:"unknown",holderRisk:"unknown",devRisk:"unknown",confidence:"error",safetyMode:"fast",elapsedMs:Date.now()-started,notes:[`fast safety incomplete: ${e instanceof Error?e.message:String(e)}`]};
-    // Keep incomplete safety results in the risk snapshot for Dog Brain learning,
-    // but do not spam Railway logs for normal paper-mode timeouts.
+    log.warn(`🛡️ SAFETY INCOMPLETE after ${value.elapsedMs}ms | ${mint.slice(0,6)}… | paper mode may continue for learning; live mode stays strict`);
     fastCache.set(mint,{expires:Date.now()+Math.min(config.safetyCacheMs,15_000),value});return value;
   }).finally(()=>{const x=fastCache.get(mint);if(x?.promise&&!x.value)fastCache.delete(mint)});
   fastCache.set(mint,{expires:now+config.safetyCacheMs,promise});

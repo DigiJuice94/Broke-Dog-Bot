@@ -66,9 +66,6 @@ export class Birdeye {
     return Math.max(0, config.birdeyeCuBudgetPerHour - this.cuUsedThisHour);
   }
   budgetText() { return `${this.cuUsedThisHour}/${config.birdeyeCuBudgetPerHour} CU/hr`; }
-  budgetPctRemaining(){return config.birdeyeCuBudgetPerHour>0?Math.max(0,Math.min(100,this.remainingBudget()/config.birdeyeCuBudgetPerHour*100)):0;}
-  status(){return {enabled:Boolean(config.birdeyeApiKey),available:Boolean(config.birdeyeApiKey)&&this.isCuAvailable()&&this.remainingBudget()>0,budgetPctRemaining:this.budgetPctRemaining(),cooldownUntil:this.cuCooldownUntil};}
-  canUseDeep(){return this.isCuAvailable()&&this.budgetPctRemaining()>config.intelligenceDegradedBirdeyeReservePct;}
   private get(url: string, timeout = 8_000, cuCost = 20) {
     if (!this.isCuAvailable()) throw new Error(`Birdeye CU cooldown active until ${new Date(this.cuCooldownUntil).toISOString()}`);
     if (!this.canSpend(cuCost)) throw new Error(`Birdeye local CU budget reached (${this.budgetText()})`);
@@ -149,7 +146,7 @@ export class Birdeye {
 
   /** Expensive risk check reserved for near-buy finalists only. */
   async holderStats(address:string): Promise<Partial<Snapshot>> {
-    if (!config.birdeyeApiKey || !this.canUseDeep() || !this.canSpend(35)) return {};
+    if (!config.birdeyeApiKey || !this.isCuAvailable() || !this.canSpend(35)) return {};
     const cached = this.holderCache.get(address);
     if (cached && Date.now()-cached.at < config.birdeyeHolderCacheMs) return cached.value;
     try {
@@ -166,20 +163,15 @@ export class Birdeye {
 
   async topTraderIntel(address:string): Promise<SmartMoneySnapshot> {
     const empty:SmartMoneySnapshot={checked:false,smartTraders:0,snipers:0,insiders:0,bundlers:0,devs:0,score:0};
-    if(!config.birdeyeApiKey || !this.canUseDeep() || !this.canSpend(35)) return empty;
+    if(!config.birdeyeApiKey || !this.isCuAvailable() || !this.canSpend(35)) return empty;
     try {
       const q=new URLSearchParams({address,time_frame:"24h",sort_type:"desc",sort_by:"volume",offset:"0",limit:"10",wallet_tags:"smart_trader,sniper,insider,bundler,dev"});
       const j:any=await this.get(`${BASE}/defi/v2/tokens/top_traders?${q}`,9_000,35);
-      const rows=arr(j?.data??j); let smart=0,sniper=0,insider=0,bundler=0,dev=0,buyUsd=0,sellUsd=0,remainingUsd=0,pnlSum=0,pnlN=0,profitable=0;
+      const rows=arr(j?.data??j); let smart=0,sniper=0,insider=0,bundler=0,dev=0;
       for(const x of rows){const raw=x.walletTags??x.wallet_tags??x.tags??[];const tags=(Array.isArray(raw)?raw:String(raw).split(",")).map((z:any)=>String(z).toLowerCase());
-        if(tags.some((z:string)=>z.includes("smart_trader")||z==="smart"))smart++;if(tags.some((z:string)=>z.includes("sniper")))sniper++;if(tags.some((z:string)=>z.includes("insider")))insider++;if(tags.some((z:string)=>z.includes("bundler")))bundler++;if(tags.some((z:string)=>z==="dev"||z.includes("developer")))dev++;
-        buyUsd+=n(x.buy_volume_usd,x.buyVolumeUsd,x.volume_buy_usd,x.buy_volume)??0; sellUsd+=n(x.sell_volume_usd,x.sellVolumeUsd,x.volume_sell_usd,x.sell_volume)??0;
-        remainingUsd+=n(x.current_value_usd,x.currentValueUsd,x.holding_value_usd,x.remaining_value_usd)??0;
-        const pnl=n(x.pnl_percent,x.pnlPct,x.realized_pnl_percent,x.pnl); if(pnl!=null){pnlSum+=pnl;pnlN++;if(pnl>0)profitable++;}
-      }
-      const distributionScore=Math.max(0,Math.min(100,(sellUsd/Math.max(1,buyUsd))*55 + (sniper*5)+(insider*8)+(bundler*6)+(dev*8)));
-      const score=Math.max(0,Math.min(100,smart*18+Math.min(20,rows.length*2)-sniper*6-insider*12-bundler*8-dev*10-Math.max(0,distributionScore-50)*.25));
-      return {checked:true,smartTraders:smart,snipers:sniper,insiders:insider,bundlers:bundler,devs:dev,score,totalBuyVolumeUsd:buyUsd,totalSellVolumeUsd:sellUsd,remainingValueUsd:remainingUsd,averagePnlPct:pnlN?pnlSum/pnlN:undefined,profitableWallets:profitable,distributionScore};
+        if(tags.some((z:string)=>z.includes("smart_trader")||z==="smart"))smart++;if(tags.some((z:string)=>z.includes("sniper")))sniper++;if(tags.some((z:string)=>z.includes("insider")))insider++;if(tags.some((z:string)=>z.includes("bundler")))bundler++;if(tags.some((z:string)=>z==="dev"||z.includes("developer")))dev++;}
+      const score=Math.max(0,Math.min(100,smart*18+Math.min(20,rows.length*2)-sniper*6-insider*12-bundler*8-dev*10));
+      return {checked:true,smartTraders:smart,snipers:sniper,insiders:insider,bundlers:bundler,devs:dev,score};
     } catch { return empty; }
   }
 
